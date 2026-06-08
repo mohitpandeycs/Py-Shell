@@ -6,7 +6,10 @@ def main():
         command = input()       # User Input
         if command == "exit":
             break
-        print(f"{command}: command not found")
+        elif command.startswith("echo "):
+                print(command[5:])      # Index Slicing for Skipping index 0 - 4
+        else:
+            print(f"{command}: command not found")
 
 if __name__ == "__main__":
     main() 
