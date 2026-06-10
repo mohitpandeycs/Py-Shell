@@ -1,76 +1,110 @@
 import sys
 import os
-import subprocess
 import shlex
-
-builtins = ["exit", "echo", "type", "pwd", "cd"]
+import subprocess
 
 
 def main():
+    prompt = "$ "
     while True:
-        sys.stdout.write("$ ")
+        command = input(prompt)
+        argv = shlex.split(command)
+        handler = get_command_handler(argv)
+        handler(argv)
 
-        args = shlex.split(input())
-        command = args[0]
 
-        if command in builtins:
-            if command == "exit":
-                break
-
-            if command == "echo":
-                print(" ".join(args[1:]))
-                continue
-
-            if command == "type":
-                command_type = args[1]
-
-                if command_type in builtins:
-                    print(f"{command_type} is a shell builtin")
-                    continue
-
-                found = False
-                paths = os.environ.get("PATH", "").split(os.pathsep)
-                for path in paths:
-                    full_path = os.path.join(path, command_type)
-                    if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
-                        print(f"{command_type} is {full_path}")
-                        found = True
-                        break
-
-                if not found:
-                    print(f"{command_type}: not found")
-                continue
-
-            if command == "pwd":
-                print(os.getcwd())
-                continue
-
-            if command == "cd":
-                path = args[1]
-
-                if path == "~":
-                    path = os.getenv("HOME")
-
-                if not os.path.exists(path):
-                    print(f"cd: {path}: No such file or directory")
-                    continue
-
-                os.chdir(path)
-                continue
+def get_command_handler(argv):
+    name = "builtin_" + argv[0]
+    func = globals().get(name, None)
+    if func is not None:
+        handler = BuiltinHandler(func)
+    else:
+        path = find_executable(argv[0])
+        if path is not None:
+            handler = ExecutableHandler(path)
         else:
-            found = False
-            paths = os.environ.get("PATH", "").split(os.pathsep)
-            for path in paths:
-                full_path = os.path.join(path, command)
-                if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
-                    subprocess.run(args)
-                    found = True
-                    break
-            if found:
-                continue
+            handler = CommandNotFoundHandler()
+    return handler
 
-        print(f"{command}: command not found")
+
+def find_executable(name):
+    for d in os.get_exec_path():
+        path = os.path.join(d, name)
+        if os.access(path, os.X_OK):
+            return path
+    return None
+
+
+class CommandNotFoundHandler:
+    def __call__(self, argv):
+        print(f"{argv[0]}: command not found", file=sys.stderr)
+
+    def get_type_message(self, argv):
+        command = argv[0]
+        return f"{command}: not found"
+
+
+class BuiltinHandler:
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
+
+    def get_type_message(self, argv):
+        command = argv[0]
+        return f"{command} is a shell builtin"
+
+
+class ExecutableHandler:
+    def __init__(self, path):
+        self.path = path
+
+    def __call__(self, argv):
+        subprocess.run(
+            argv,
+            executable=self.path,
+        )
+
+    def get_type_message(self, argv):
+        command = argv[0]
+        return f"{command} is {self.path}"
+
+
+def builtin_exit(argv, **kw):
+    exit(0)
+
+
+def builtin_echo(argv, **kw):
+    print(" ".join(argv[1:]))
+
+
+def builtin_type(argv, **kw):
+    if len(argv) < 2:
+        return
+
+    argv = argv[1:]
+    handler = get_command_handler(argv)
+    print(handler.get_type_message(argv))
+
+
+def builtin_pwd(argv, **kw):
+    print(os.getcwd())
+
+
+def builtin_cd(argv, **kw):
+    if len(argv) < 2:
+        return
+    path = argv[1]
+    path = os.path.expanduser(path)
+    try:
+        os.chdir(path)
+    except FileNotFoundError:
+        print(f"cd: {argv[1]}: No such file or directory")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        exit(1)
