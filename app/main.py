@@ -104,14 +104,14 @@ def main() -> None:
             log = redirect_output(redirects[0], args[-1])
             args = args[:-2]
         # Keep in mind you could do a set intersection like found = list(set(args) & set(redirect_types))
-        # if '>' in args or '1>' in args or '2>' in args:
-        #     logging = True
-        #     log = open(args[-1], 'w')
-        #     if '2>' in args:
-        #         sys.stderr = log
-        #     else:
-        #         sys.stdout = log
-        #     args = args[:-2]
+        if '>' in args or '1>' in args or '2>' in args:
+            logging = True
+            log = open(args[-1], 'w')
+            if '2>' in args:
+                sys.stderr = log
+            else:
+                sys.stdout = log
+            args = args[:-2]
 
         if builtin := builtins.get(command):
             output = builtin(args)
