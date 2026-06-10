@@ -1,145 +1,132 @@
-import sys
 import os
-import shutil
 import subprocess
-import shlex
-import readline
-
-builtins = ["exit", "echo", "type", "pwd", "cd"]
-excecutables = []
-
-PATH = os.environ.get("PATH", "").split(os.pathsep)
-HOME = os.environ.get("HOME", "")
-
-for path in PATH:
-    try:
-        for filename in os.listdir(path):
-            filepath = os.path.join(path, filename)
-            if os.access(filepath, os.X_OK):
-                excecutables.append(filename)
-    except FileNotFoundError:
-        continue
+import sys
+from pathlib import Path
 
 
-def find_exc(cmd):
-    full_path = None
-
-    for path in PATH:
-        full_path = f"{path}/{cmd}"
-        try:
-            if os.access(full_path, os.X_OK):
-                return [full_path, True]
-        except FileNotFoundError:
-            continue
-
-    return [full_path, False]
+# lets refactor this so that each function returns a string for stdout
+def echo(args: list) -> str:
+    return " ".join(args)
 
 
-def autocomplete(text, state):
-    matches = [cmd for cmd in builtins + excecutables if cmd.startswith(text)]
-    if len(matches) > 2:
-        return matches[state]
+def handle_exit(*args: list) -> None:
+    sys.exit()
+
+
+def type_search(args: list) -> str:
+    is_builtin = builtins.get(args[0])
+    if is_builtin:
+        return f"{args[0]} is a shell builtin"
     else:
-        return matches[state] + " " if state < len(matches) else None
+        return search_path_directories(args[0])
 
 
-def split_redirection(command):
-    for index, token in enumerate(command):
-        if token in {">", "1>", ">>", "1>>", "2>"}:
-            if index + 1 >= len(command):
-                return command, None, None
-
-            return command[:index], token, command[index + 1]
-
-    return command, None, None
-
-
-def commandLine(cwd, command, cmd, args):
-    match cmd:
-        case "exit":
-            sys.exit()
-
-        case "echo":
-            return f"{' '.join(args)}\n"
-
-        case "type":
-            if args[0] in builtins:
-                return f"{args[0]} is a shell builtin\n"
-            else:
-                type = find_exc(" ".join(args))
-
-                if type[1] == True:
-                    return f"{args[0]} is {type[0]}\n"
-                else:
-                    return f"{args[0]}: not found\n"
-
-        case "pwd":
-            return f"{cwd}\n"
-
-        case "cd":
-            if args[0] == "~":
-                os.chdir(os.environ.get("HOME", ""))
-            else:
-                try:
-                    os.chdir(args[0])
-                except FileNotFoundError:
-                    return f"cd: {args[0]}: No such file or directory\n"
-
-            return ""
-
-        case "cat":
-            result = subprocess.run(command, capture_output=True, text=True)
-            return result.stdout
-
-        case "git":
-            if args[0] == "test":
-                os.system('git commit -am "shell tester"')
-                os.system("git push origin master")
-            else:
-                os.system(f"{cmd} {' '.join(args)}")
-
-            return "\n"
-
-        case _:
-            if shutil.which(cmd):
-                result = subprocess.run(command, capture_output=True, text=True)
-                return result.stdout
-            else:
-                return f"{cmd}: command not found\n"
+def search_path_directories(command: str) -> str:
+    paths = set(os.environ["PATH"].split(":"))
+    for path in paths:
+        # print(f'Checking for {command} in {path}')ß
+        if os.path.exists(path + "/" + command) and os.access(
+            path + "/" + command, os.X_OK
+        ):
+            return f"{command} is {path + '/' + command}"
+    return f"{command}: not found"
 
 
-def write_redirection_output(filename, operator, output):
-    mode = "a" if operator in {">>", "1>>"} else "w"
+def search_and_return_executable(command: str):
+    paths = set(os.environ["PATH"].split(":"))
+    for path in paths:
+        # print(f'Checking for {command} in {path}')ß
+        if os.path.exists(path + "/" + command) and os.access(
+            path + "/" + command, os.X_OK
+        ):
+            return path + "/" + command
+    return
 
-    with open(filename, mode, encoding="utf-8") as file:
-        file.write(output or "")
+
+def print_working_directory(args: list) -> str:
+    return os.getcwd()
 
 
-def main():
-    readline.set_completer(autocomplete)  # type: ignore
-    readline.parse_and_bind("tab: complete")  # type: ignore
-
-    cwd = os.getcwd()
-
-    sys.stdin.flush()
-    original_command = input("$ ")
-    command = shlex.split(original_command)
-
-    if not command:
+def change_directory(args: list) -> None:
+    if args[0] == "~":
+        os.chdir(os.getenv("HOME"))
         return
-
-    command, redirection_operator, redirection_file = split_redirection(command)
-
-    cmd = command[0]
-    args = command[1:]
-
-    if redirection_operator:
-        output = commandLine(cwd, command, cmd, args)
-        write_redirection_output(redirection_file, redirection_operator, output)
+    new_path = Path(args[0])
+    if new_path.exists():
+        os.chdir(new_path)
     else:
-        sys.stdout.write(str(commandLine(cwd, command, cmd, args)))
+        print(f"cd: {new_path}: No such file or directory")
+    return
+
+
+builtins = {
+    "exit": handle_exit,
+    "echo": echo,
+    "type": type_search,
+    "pwd": print_working_directory,
+    "cd": change_directory,
+}
+
+redirect_commands = {
+    ">": ["w", "stdout"],
+    "1>": ["w", "stdout"],
+    "2>": ["w", "stderr"],
+    ">>": ["a", "stdout"],
+    "1>>": ["a", "stdout"],
+    "2>>": ["a", "stderr"],
+}
+
+
+def redirect_output(redirect_command: str, logname: str):
+    file_writing_type, output_type = redirect_commands[redirect_command]
+    log = open(logname, file_writing_type)
+    if output_type == "stdout":
+        sys.stdout = log
+    elif output_type == "stderr":
+        sys.stderr = log
+    return log
+
+
+def parse_command(input_statement: str) -> tuple[str, list]:
+    commands_and_arguments = input_statement.split(" ")
+    command, args = commands_and_arguments[0], commands_and_arguments[1:]
+    return command, args
+
+
+def main() -> None:
+    while True:
+        input_statement = input("$ ")
+        command, args = parse_command(input_statement)
+        # logging = False
+
+        redirects = list(set(args) & set(redirect_commands.keys()))
+        if len(redirects) > 0:
+            log = redirect_output(redirects[0], args[-1])
+            args = args[:-2]
+        # Keep in mind you could do a set intersection like found = list(set(args) & set(redirect_types))
+        if '>' in args or '1>' in args or '2>' in args:
+            logging = True
+            log = open(args[-1], 'w')
+            if '2>' in args:
+                sys.stderr = log
+            else:
+                sys.stdout = log
+            args = args[:-2]
+
+        if builtin := builtins.get(command):
+            output = builtin(args)
+            if output:
+                print(output)
+        elif search_and_return_executable(command):
+            subprocess.run([command, *args], stdout=sys.stdout, stderr=sys.stderr)
+        else:
+            print(f"{command}: command not found")
+
+        if "log" in locals():
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            log.close()
 
 
 if __name__ == "__main__":
-    while True:
-        main()
+    main()
