@@ -1,110 +1,131 @@
 import os
-import shlex
 import subprocess
 import sys
-import sys
-from dataclasses import dataclass
-from contextlib import contextmanager
+from pathlib import Path
 
-_REDIRECT_MAP: dict[str, tuple[str, str]] = {
-    ">": ("stdout", "w"),
-    "1>": ("stdout", "w"),
-    ">>": ("stdout", "a"),
-    "1>>": ("stdout", "a"),
-    "2>": ("stderr", "w"),
-    "2>>": ("stderr", "a"),
+
+# lets refactor this so that each function returns a string for stdout
+def echo(args: list) -> str:
+    return " ".join(args)
+
+
+def handle_exit(*args: list) -> None:
+    sys.exit()
+
+
+def type_search(args: list) -> str:
+    is_builtin = builtins.get(args[0])
+    if is_builtin:
+        return f"{args[0]} is a shell builtin"
+    else:
+        return search_path_directories(args[0])
+
+
+def search_path_directories(command: str) -> str:
+    paths = set(os.environ["PATH"].split(":"))
+    for path in paths:
+        # print(f'Checking for {command} in {path}')ß
+        if os.path.exists(path + "/" + command) and os.access(
+            path + "/" + command, os.X_OK
+        ):
+            return f"{command} is {path + '/' + command}"
+    return f"{command}: not found"
+
+
+def search_and_return_executable(command: str):
+    paths = set(os.environ["PATH"].split(":"))
+    for path in paths:
+        # print(f'Checking for {command} in {path}')ß
+        if os.path.exists(path + "/" + command) and os.access(
+            path + "/" + command, os.X_OK
+        ):
+            return path + "/" + command
+    return
+
+
+def print_working_directory(args: list) -> str:
+    return os.getcwd()
+
+
+def change_directory(args: list) -> None:
+    if args[0] == "~":
+        os.chdir(os.getenv("HOME"))
+        return
+    new_path = Path(args[0])
+    if new_path.exists():
+        os.chdir(new_path)
+    else:
+        print(f"cd: {new_path}: No such file or directory")
+    return
+
+
+builtins = {
+    "exit": handle_exit,
+    "echo": echo,
+    "type": type_search,
+    "pwd": print_working_directory,
+    "cd": change_directory,
+}
+
+redirect_commands = {
+    ">": ["w", "stdout"],
+    "1>": ["w", "stdout"],
+    "2>": ["w", "stderr"],
+    ">>": ["a", "stdout"],
+    "1>>": ["a", "stdout"],
+    "2>>": ["a", "stderr"],
 }
 
 
-@dataclass
-class RedirectInfo:
-    stdout_file: str | None = None
-    stdout_mode: str = "w"
-    stderr_file: str | None = None
-    stderr_mode: str = "w"
-
-    @property
-    def has_redirect(self) -> bool:
-        return self.stdout_file is not None or self.stderr_file is not None
+def redirect_output(redirect_command: str, logname: str):
+    file_writing_type, output_type = redirect_commands[redirect_command]
+    log = open(logname, file_writing_type)
+    if output_type == "stdout":
+        sys.stdout = log
+    elif output_type == "stderr":
+        sys.stderr = log
+    return log
 
 
-def extract_redirects(parts: list[str]) -> tuple[list[str], RedirectInfo]:
-    cmd_tokens = []
-    redirect = RedirectInfo()
-    i = 0
-    while i < len(parts):
-        token = parts[i]
-        if token in _REDIRECT_MAP and i + 1 < len(parts):
-            target, mode = _REDIRECT_MAP[token]
-            if target == "stdout":
-                redirect.stdout_file = parts[i + 1]
-                redirect.stdout_mode = mode
-            else:
-                redirect.stderr_file = parts[i + 1]
-                redirect.stderr_mode = mode
-            i += 2
-        else:
-            cmd_tokens.append(token)
-            i += 1
-    return cmd_tokens, redirect
+def parse_command(input_statement: str) -> tuple[str, list]:
+    commands_and_arguments = input_statement.split(" ")
+    command, args = commands_and_arguments[0], commands_and_arguments[1:]
+    return command, args
 
 
-@contextmanager
-def apply_redirect(redirect: RedirectInfo):
-    stdout = (
-        open(redirect.stdout_file, redirect.stdout_mode)
-        if redirect.stdout_file
-        else None
-    )
-    stderr = (
-        open(redirect.stderr_file, redirect.stderr_mode)
-        if redirect.stderr_file
-        else None
-    )
-    old_stdout, old_stderr = sys.stdout, sys.stderr
-    try:
-        if stdout:
-            sys.stdout = stdout
-        if stderr:
-            sys.stderr = stderr
-        yield stdout, stderr
-    finally:
-        sys.stdout, sys.stderr = old_stdout, old_stderr
-        if stdout:
-            stdout.close()
-        if stderr:
-            stderr.close()
-
-
-def main():
+def main() -> None:
     while True:
-        sys.stdout.write("$ ")
-        sys.stdout.flush()
-        line = sys.stdin.readline()
+        input_statement = input("$ ")
+        command, args = parse_command(input_statement)
+        # logging = False
 
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
+        redirects = list(set(args) & set(redirect_commands.keys()))
+        if len(redirects) > 0:
+            log = redirect_output(redirects[0], args[-1])
+            args = args[:-2]
+        # Keep in mind you could do a set intersection like found = list(set(args) & set(redirect_types))
+        # if '>' in args or '1>' in args or '2>' in args:
+        #     logging = True
+        #     log = open(args[-1], 'w')
+        #     if '2>' in args:
+        #         sys.stderr = log
+        #     else:
+        #         sys.stdout = log
+        #     args = args[:-2]
 
-        parts = shlex.split(line)
-        cmd_tokens, redirect = extract_redirects(parts)
+        if builtin := builtins.get(command):
+            output = builtin(args)
+            if output:
+                print(output)
+        elif search_and_return_executable(command):
+            subprocess.run([command, *args], stdout=sys.stdout, stderr=sys.stderr)
+        else:
+            print(f"{command}: command not found")
 
-        if not cmd_tokens:
-            continue
-
-        with apply_redirect(redirect):
-            process = subprocess.Popen(
-                cmd_tokens,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            stdout_data, stderr_data = process.communicate()
-            if stdout_data:
-                sys.stdout.write(stdout_data.decode())
-            if stderr_data:
-                sys.stderr.write(stderr_data.decode())
+        if "log" in locals():
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            log.close()
 
 
 if __name__ == "__main__":
