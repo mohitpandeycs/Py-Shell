@@ -778,7 +778,7 @@ def complete(text, state):
         decoded = result.stdout.decode("UTF-8")
         decoded = decoded[: len(decoded) - 1]
         options = decoded.split("\n")
-        options = [f"{option} " for option in options]
+        options = [f"{option} " for option in options if option.startswith(text)]
     else:
         p = pathlib.Path(os.getcwd())
         split = text.split("/")
