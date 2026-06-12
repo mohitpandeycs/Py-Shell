@@ -765,7 +765,8 @@ def complete(text, state):
     line_buffer = readline.get_line_buffer()
     # print(f"{start=} {text=}, {state=}, {line_buffer=}")
     left_stripped_line_buffer = line_buffer.lstrip()
-    first_line_buffer_token = left_stripped_line_buffer.split(" ")[0]
+    space_splitted_line_buffer = left_stripped_line_buffer.split(" ")
+    first_line_buffer_token = space_splitted_line_buffer[0]
     if start == len(line_buffer) - len(left_stripped_line_buffer):
         options = Commands.available_commands + list(
             set(executables) - set(Commands.available_commands)
@@ -774,7 +775,14 @@ def complete(text, state):
         options = [f"{option} " for option in options if option.startswith(text)]
     elif first_line_buffer_token in completer_commands:
         path = get_path_by_completer_command(first_line_buffer_token)
-        result = subprocess.run([path], stdout=subprocess.PIPE)
+        argv = ["", "", "", ""]
+        argv[0] = path
+        argv[1] = first_line_buffer_token
+        argv[2] = text
+        argv[3] = ""
+        if len(space_splitted_line_buffer) >= 2:
+            argv[3] = space_splitted_line_buffer[len(space_splitted_line_buffer) - 2]
+        result = subprocess.run(argv, stdout=subprocess.PIPE)
         decoded = result.stdout.decode("UTF-8")
         decoded = decoded[: len(decoded) - 1]
         options = decoded.split("\n")
