@@ -1,185 +1,72 @@
-import os
-import subprocess
-import shlex
 import readline
+from typing import List
+import os
 
-path = os.environ["PATH"]
-try:
-    home = os.environ["HOME"]
-except:
-    home = "you're on windows :("
-BUILT_IN_COMMANDS = ["exit", "echo", "type", "pwd", "cd"]
+# Global variables
+BUILTIN_COMMANDS = ["echo", "exit"]
 
-AUTOCOMPLETE_ARRAY = BUILT_IN_COMMANDS.copy()
-
-directories = path.split(":")
-for directory in directories:
-    if os.path.exists(directory):
-        dir_list = os.listdir(directory)
-        AUTOCOMPLETE_ARRAY += dir_list
+matchCache: List[str] = []
+EXECUTABLE_LIST = []
+CURR_LCP: str = ""
 
 
-def autocomplete(text, state):
-    matches = [cmd for cmd in AUTOCOMPLETE_ARRAY if cmd.startswith(text)]
-    return matches[state] + " " if state < len(matches) else None
-
-
-def eval_stdout_overwrite(redirect_symbol: str, command_list: list):
-    redirect_stdout_idx = command_list.index(redirect_symbol)
-    split_command_segment = command_list[0:redirect_stdout_idx]
-    file_segment = command_list[redirect_stdout_idx + 1]
-    process = subprocess.Popen(split_command_segment, stdout=subprocess.PIPE)
-    out, err = process.communicate()
-    with open(file_segment, "wb") as file:
-        file.write(out)
-
-
-def eval_stdout_append(redirect_symbol: str, command_list: list):
-    redirect_stdout_idx = command_list.index(redirect_symbol)
-    split_command_segment = command_list[0:redirect_stdout_idx]
-    file_segment = command_list[redirect_stdout_idx + 1]
-    process = subprocess.Popen(split_command_segment, stdout=subprocess.PIPE)
-    out, err = process.communicate()
-    with open(file_segment, "ab") as file:
-        file.write(out)
-
-
-def is_on_path(command: str):
-    directories = path.split(":")
-    for directory in directories:
-        file_path = f"{directory}/{command}"
-        file_exists = os.path.isfile(file_path)
-        has_permissions = os.access(file_path, os.X_OK)
-        if file_exists and has_permissions:
-            return file_path
-    return False
-
-
-def eval_cmd(command: str):
-    try:
-        split_command = shlex.split(command)
-    except ValueError as e:
-        print(f"parse error: {e}")
+def initExecutables() -> None:
+    global EXECUTABLE_LIST, BUILTIN_COMMANDS
+    paths = os.environ.get("PATH")
+    if not paths:
+        # not path variables to think about
+        EXECUTABLE_LIST = BUILTIN_COMMANDS
         return
-
-    if not split_command:
-        return
-
-    match split_command[0]:
-        case "exit":
-            exit()
-
-        case "echo":
-            if ">" in split_command:
-                redirect_stdout_idx = split_command.index(">")
-                text_segment = " ".join(split_command[1:redirect_stdout_idx])
-                file_segment = split_command[redirect_stdout_idx + 1]
-                with open(file_segment, "w") as file:
-                    file.write(text_segment + "\n")
-            elif "1>" in split_command:
-                redirect_stdout_idx = split_command.index("1>")
-                text_segment = " ".join(split_command[1:redirect_stdout_idx])
-                file_segment = split_command[redirect_stdout_idx + 1]
-                with open(file_segment, "w") as file:
-                    file.write(text_segment + "\n")
-            elif "2>" in split_command:
-                redirect_stdout_idx = split_command.index("2>")
-                text_segment = " ".join(split_command[1:redirect_stdout_idx])
-                file_segment = split_command[redirect_stdout_idx + 1]
-                print(text_segment)
-                with open(file_segment, "w") as file:
-                    file.write("")
-            elif ">>" in split_command:
-                redirect_stdout_idx = split_command.index(">>")
-                text_segment = " ".join(split_command[1:redirect_stdout_idx])
-                file_segment = split_command[redirect_stdout_idx + 1]
-                with open(file_segment, "a") as file:
-                    file.write(text_segment + "\n")
-            elif "1>>" in split_command:
-                redirect_stdout_idx = split_command.index("1>>")
-                text_segment = " ".join(split_command[1:redirect_stdout_idx])
-                file_segment = split_command[redirect_stdout_idx + 1]
-                with open(file_segment, "a") as file:
-                    file.write(text_segment + "\n")
-            elif "2>>" in split_command:
-                redirect_stdout_idx = split_command.index("2>>")
-                text_segment = " ".join(split_command[1:redirect_stdout_idx])
-                file_segment = split_command[redirect_stdout_idx + 1]
-                print(text_segment)
-                with open(file_segment, "a") as file:
-                    file.write("")
-            else:
-                print(" ".join(split_command[1:]))
-
-        case "pwd":
-            print(os.getcwd())
-
-        case "cd":
-            if len(split_command) < 2:
-                os.chdir(home)
-            elif split_command[1] == "~":
-                os.chdir(home)
-            elif os.path.exists(split_command[1]):
-                os.chdir(split_command[1])
-            else:
-                print(f"cd: {split_command[1]}: No such file or directory")
-
-        case "type":
-            if len(split_command) < 2:
-                print(": not found")
-                return
-            cmd = split_command[1]
-            if cmd in BUILT_IN_COMMANDS:
-                print(f"{cmd} is a shell builtin")
-            elif path := is_on_path(cmd):
-                print(f"{cmd} is {path}")
-            else:
-                print(f"{cmd}: not found")
-
-        case _:
-            cmd = split_command[0]
-            if is_on_path(cmd):
-                if ">" in split_command:
-                    eval_stdout_overwrite(">", split_command)
-                elif "1>" in split_command:
-                    eval_stdout_overwrite("1>", split_command)
-                elif "2>" in split_command:
-                    redirect_stdout_idx = split_command.index("2>")
-                    split_command_segment = split_command[0:redirect_stdout_idx]
-                    file_segment = split_command[redirect_stdout_idx + 1]
-                    process = subprocess.Popen(
-                        split_command_segment, stderr=subprocess.PIPE
-                    )
-                    out, err = process.communicate()
-                    with open(file_segment, "wb") as file:
-                        file.write(err)
-                elif ">>" in split_command:
-                    eval_stdout_append(">>", split_command)
-                elif "1>>" in split_command:
-                    eval_stdout_append("1>>", split_command)
-                elif "2>>" in split_command:
-                    redirect_stdout_idx = split_command.index("2>>")
-                    split_command_segment = split_command[0:redirect_stdout_idx]
-                    file_segment = split_command[redirect_stdout_idx + 1]
-                    process = subprocess.Popen(
-                        split_command_segment, stderr=subprocess.PIPE
-                    )
-                    out, err = process.communicate()
-                    with open(file_segment, "ab") as file:
-                        file.write(err)
-                else:
-                    subprocess.call(split_command)
-            else:
-                print(f"{cmd}: command not found")
+    for path in paths.split(":"):
+        # skip the path doesnt exist
+        if not os.path.exists(path):
+            continue
+        EXECUTABLE_LIST.extend(os.listdir(path))
+    # remove duplicates
+    EXECUTABLE_LIST = list(set(BUILTIN_COMMANDS + EXECUTABLE_LIST))
 
 
-def main():
-    readline.set_completer(autocomplete)
-    readline.parse_and_bind("tab: complete")
-    while True:
-        command: str = input("$ ")
-        eval_cmd(command)
+def getLcp() -> str:
+    if len(matchCache) < 2:
+        return ""
+    lcp = ""
+    for a in zip(*matchCache):
+        if not all(a[idx] == a[idx + 1] for idx in range(0, len(a) - 1)):
+            break
+        lcp += a[0]
+    return lcp
 
 
-if __name__ == "__main__":
-    main()
+# set tab for completion
+def completer(text: str, state: int):
+    global matchCache
+    lineBuffer = readline.get_line_buffer()
+
+    # File completion
+    if len(lineBuffer.split(" ")) > 1:
+        if state == 0:
+            matchCache.clear()
+            matchCache.extend(
+                sorted(
+                    [file for file in os.listdir(os.getcwd()) if file.startswith(text)]
+                )
+            )
+        return matchCache[state] + " " if state < len(matchCache) else None
+
+    # command completions
+    else:
+        # readline calls the completer function multiple times with the state 0,1,2
+        if state == 0:
+            matchCache.clear()
+            matchCache.extend(
+                sorted(
+                    [command for command in EXECUTABLE_LIST if command.startswith(text)]
+                )
+            )
+            LCP = getLcp()
+            # if LCP exists then complete and clear the match cache
+            if LCP and LCP != text:
+                matchCache.clear()
+                return LCP
+
+        return matchCache[state] + " " if state < len(matchCache) else None
