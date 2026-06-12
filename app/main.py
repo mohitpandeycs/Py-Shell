@@ -398,7 +398,7 @@ def process_type(args: list):
                 print_command_fullpath(arg, path_rv)
 
 
-def run_command(command_tokens: list, stdout, stderr):
+def run_command(command_tokens: list, stdout, stderr, background_job: bool):
     if command_tokens == Commands.null_cmd:
         return
     command = command_tokens[0]
@@ -406,6 +406,10 @@ def run_command(command_tokens: list, stdout, stderr):
     if len(command_tokens) > 1:
         args = command_tokens[1 : len(command_tokens)]
         args = [arg for arg in args if arg != ""]
+    if background_job:
+        p = subprocess.Popen(command_tokens, stdout=stdout, stderr=stderr)
+        print(f"[1] {p.pid}")
+        return
     match command:
         case Commands.exit_cmd:
             return Signal.exit_signal
@@ -447,6 +451,7 @@ class TokenizedMessage:
         self.invalid_message = True
         self.fd_table = {}
         self.fd_mode = {}
+        self.background_job = False
         try:
             (
                 self.single_quote_index_pairs,
@@ -454,6 +459,7 @@ class TokenizedMessage:
                 self.backslash_indices,
             ) = self.preprocess_quotes(self.original_message)
             self.handle_redirections(self.stripped)
+            self.handle_ampersand(self.stripped)
             self.command = self.get_command(self.stripped, self.redirect_index_pairs)
             debug_logger.debug(f"{self.command=}")
             self.command_tokens = self.tokenize_command(
@@ -463,6 +469,11 @@ class TokenizedMessage:
             )
         except InvalidStringException:
             print(f"Error: Incomplete quotes detected.", file=sys.stderr)
+
+    def handle_ampersand(self, stripped: str):
+        if stripped[-2:] == " &":
+            self.stripped = stripped[: len(stripped) - 2]
+            self.background_job = True
 
     def get_command(self, stripped: str, redirect_index_pairs: list[tuple]):
         command = stripped
@@ -602,17 +613,29 @@ class TokenizedMessage:
 
         rv = None
         if len(files_stdout) == 0 and len(files_stderr) == 0:
-            rv = run_command(self.command_tokens, sys.stdout, sys.stderr)
+            rv = run_command(
+                self.command_tokens, sys.stdout, sys.stderr, self.background_job
+            )
         elif len(files_stdout) > 0 and len(files_stderr) == 0:
             reference_file = files_stdout[0]
             with open(reference_file, stdout_flag) as desired_stdout:
                 with redirect_stdout(desired_stdout):
-                    rv = run_command(self.command_tokens, desired_stdout, sys.stderr)
+                    rv = run_command(
+                        self.command_tokens,
+                        desired_stdout,
+                        sys.stderr,
+                        self.background_job,
+                    )
         elif len(files_stdout) == 0 and len(files_stderr) > 0:
             reference_file = files_stderr[0]
             with open(reference_file, stderr_flag) as desired_stderr:
                 with redirect_stderr(desired_stderr):
-                    rv = run_command(self.command_tokens, sys.stdout, desired_stderr)
+                    rv = run_command(
+                        self.command_tokens,
+                        sys.stdout,
+                        desired_stderr,
+                        self.background_job,
+                    )
         else:
             reference_file = files_stdout[0]
             reference_file_err = files_stderr[0]
@@ -622,7 +645,10 @@ class TokenizedMessage:
             ):
                 with redirect_stdout(desired_stdout), redirect_stderr(desired_stderr):
                     rv = run_command(
-                        self.command_tokens, desired_stdout, desired_stderr
+                        self.command_tokens,
+                        desired_stdout,
+                        desired_stderr,
+                        self.background_job,
                     )
         return rv
 
