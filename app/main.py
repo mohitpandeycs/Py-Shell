@@ -4,10 +4,7 @@ import os
 import pathlib
 import stat
 import subprocess
-try:
-    import readline
-except ModuleNotFoundError:
-    readline = None
+import readline
 from contextlib import redirect_stdout, redirect_stderr
 from collections import deque
 from app.custom_exceptions import DirectoryNotFoundException, InvalidStringException
@@ -96,6 +93,29 @@ def check_file_mode(file, permission: str, level: str) -> bool:
     return False
 
 
+def get_path_by_completer_command(command: str) -> str:
+    with open(complete_file, READ_FLAG) as f:
+        file_data = f.read()
+        splitted = file_data.split("\n")
+        debug_logger.debug(f"Reading file data for {complete_file=}")
+        debug_logger.debug(f"File data (split by newline):{splitted}")
+        index = splitted.index(command)
+        assert index < len(splitted) - 1
+        path = splitted[index + 1]
+        return path
+
+
+def get_all_completer_commands() -> list[str]:
+    try:
+        with open(complete_file, READ_FLAG) as f:
+            file_data = f.read()
+            splitted = file_data.split("\n")
+            commands = [x for index, x in enumerate(splitted) if index % 2 == 0]
+            return commands
+    except OSError as E:
+        return []
+
+
 def get_all_system_commands() -> list[str]:
     path = os.environ["PATH"]
     locations = path.split(os.pathsep)
@@ -107,7 +127,7 @@ def get_all_system_commands() -> list[str]:
             continue
         files = [f for f in p.iterdir()]
         for file in files:
-            file_suffix = file.name
+            file_suffix = str(file).split("/")[-1]
             if file_suffix not in rv_set:
                 rv.append(file_suffix)
             rv_set.add(file_suffix)
@@ -124,7 +144,7 @@ def get_command_path(command) -> str:
             continue
         files = [f for f in p.iterdir()]
         for file in files:
-            file_suffix = file.name
+            file_suffix = str(file).split("/")[-1]
             if file_suffix != command:
                 continue
             if check_file_mode(file, Permissions.executable, Permissions.other):
@@ -175,21 +195,16 @@ def process_complete(args: list):
                         f"Appending {flag_args[Flags.REGISTER_FLAG][0]} to {complete_file=}"
                     )
                     f.write(f"{flag_args[Flags.REGISTER_FLAG][0]}\n")
+                    completer_commands.append(flag_args[Flags.REGISTER_FLAG][1])
             case Flags.PRINT_FLAG:
-                with open(complete_file, READ_FLAG) as f:
-                    file_data = f.read()
-                    splitted = file_data.split("\n")
-                    command_to_search_for = flag_args[Flags.PRINT_FLAG][0]
-                    debug_logger.debug(f"Reading file data for {complete_file=}")
-                    debug_logger.debug(f"File data (split by newline):{splitted}")
-                    try:
-                        index = splitted.index(command_to_search_for)
-                        assert index < len(splitted) - 1
-                        path = splitted[index + 1]
-                        print(f"complete -C '{path}' {command_to_search_for}")
-                    except ValueError as v:
-                        debug_logger.debug("VALUE ERROR")
-                        raise CompleteNotFoundException(command_to_search_for) from v
+                command_to_search_for = flag_args[Flags.PRINT_FLAG][0]
+                try:
+                    path = get_path_by_completer_command(command_to_search_for)
+                    print(f"complete -C '{path}' {command_to_search_for}")
+                except ValueError as v:
+                    debug_logger.debug("VALUE ERROR")
+                    raise CompleteNotFoundException(command_to_search_for) from v
+
             case _:
                 print(f"{flag} is the last prev flag")
 
@@ -307,7 +322,7 @@ def process_cd(args: list):
         print(f"cd: {goal_path_str}: No such file or directory", file=sys.stderr)
     except TooManyArgumentsException:
         print("cd: Too many arguments", file=sys.stderr)
-    except OSError as e:
+    except OSError:
         sys.stderr.write(f"Error: {e}")
         sys.stderr.flush()
 
@@ -740,19 +755,30 @@ def process_command(msg: str):
 
 
 executables = get_all_system_commands()
-curr_str = ""
+completer_commands = get_all_completer_commands()
 
 
 # gnu readline completer function for tab completion on commands
 def complete(text, state):
     options = []
-    start = readline.get_begidx() if readline else 0
-    # print(f"{start=} {text=}, {state=}")
-    if start == 0:
+    start = readline.get_begidx()
+    line_buffer = readline.get_line_buffer()
+    # print(f"{start=} {text=}, {state=}, {line_buffer=}")
+    left_stripped_line_buffer = line_buffer.lstrip()
+    first_line_buffer_token = left_stripped_line_buffer.split(" ")[0]
+    if start == len(line_buffer) - len(left_stripped_line_buffer):
         options = Commands.available_commands + list(
             set(executables) - set(Commands.available_commands)
         )
+        options = options + list(set(completer_commands) - set(options))
         options = [f"{option} " for option in options if option.startswith(text)]
+    elif first_line_buffer_token in completer_commands:
+        path = get_path_by_completer_command(first_line_buffer_token)
+        result = subprocess.run([path], stdout=subprocess.PIPE)
+        decoded = result.stdout.decode("UTF-8")
+        decoded = decoded[: len(decoded) - 1]
+        options = decoded.split("\n")
+        options = [f"{option} " for option in options]
     else:
         p = pathlib.Path(os.getcwd())
         split = text.split("/")
@@ -783,10 +809,10 @@ def complete(text, state):
 
 def main():
     debug_logger.debug("Started")
-    if readline:
-        readline.parse_and_bind("tab: complete")
-        readline.set_completer(complete)
-        readline.set_completer_delims(" ")
+    # line for tab completion
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer(complete)
+    readline.set_completer_delims(" ")
     while True:
         msg = input("$ ")
         signal = process_command(msg)
