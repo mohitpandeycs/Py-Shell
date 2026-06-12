@@ -34,9 +34,18 @@ class Commands:
     type_cmd = "type"
     pwd_cmd = "pwd"
     cd_cmd = "cd"
+    jobs_cmd = "jobs"
     complete_cmd = "complete"
     null_cmd = "NULL"  # used as kind of a null value, not a actual command
-    available_commands = [echo_cmd, exit_cmd, type_cmd, pwd_cmd, cd_cmd, complete_cmd]
+    available_commands = [
+        echo_cmd,
+        exit_cmd,
+        type_cmd,
+        pwd_cmd,
+        cd_cmd,
+        complete_cmd,
+        jobs_cmd,
+    ]
 
 
 class Signal:
@@ -413,6 +422,8 @@ def run_command(command_tokens: list, stdout, stderr):
             process_cd(args)
         case Commands.complete_cmd:
             process_complete(args)
+        case Commands.jobs_cmd:
+            pass
         case _:
             cmd_path = get_command_path(command)
             if cmd_path == Commands.null_cmd:
