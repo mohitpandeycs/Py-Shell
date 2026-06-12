@@ -4,7 +4,7 @@ import subprocess
 import shlex
 import readline
 
-BUILTINS = {"echo", "exit", "type", "pwd", "cd"}
+BUILTINS = {"echo", "exit", "type", "pwd", "cd", "complete"}
 BUILTIN_COMPLETIONS = sorted(BUILTINS)
 
 
@@ -45,33 +45,77 @@ def get_executables():
 def completer(text, state):
     line = readline.get_line_buffer()
 
-    # Split the current line
-    words = line.split()
-
-    # Completing the command itself (first word)
-    if len(words) <= 1 and not line.endswith(" "):
+    # Command completion
+    if " " not in line:
         commands = BUILTIN_COMPLETIONS + list(get_executables())
 
         matches = sorted(cmd for cmd in set(commands) if cmd.startswith(text))
+
+        if state >= len(matches):
+            return None
+
+        match = matches[state]
+
+        completion = match
+
+        if len(matches) == 1:
+            completion += " "
+
+        return completion
+
+    # Filename / directory completion
     else:
-        try:
+        if "/" in text:
+            directory, prefix = text.rsplit("/", 1)
+
+            search_dir = directory if directory else "."
+
+            try:
+                matches = sorted(
+                    entry
+                    for entry in os.listdir(search_dir)
+                    if entry.startswith(prefix)
+                )
+            except OSError:
+                matches = []
+
+            if state >= len(matches):
+                return None
+
+            match = matches[state]
+
+            completion = f"{directory}/{match}"
+
+            if os.path.isdir(os.path.join(search_dir, match)):
+                completion += "/"
+            elif len(matches) == 1:
+                completion += " "
+
+            return completion
+
+        else:
             matches = sorted(f for f in os.listdir(".") if f.startswith(text))
-        except OSError:
-            matches = []
 
-    if state >= len(matches):
-        return None
+            if state >= len(matches):
+                return None
 
-    match = matches[state]
+            match = matches[state]
 
-    # For a single match add a trailing space
-    if len(matches) == 1:
-        return match + " "
+            completion = match
 
-    return match
+            # Directory -> trailing /
+            if os.path.isdir(match):
+                completion += "/"
+
+            # File -> trailing space
+            elif len(matches) == 1:
+                completion += " "
+
+            return completion
 
 
 def main():
+    readline.set_completer_delims(" \t\n")
     readline.parse_and_bind("tab: complete")
     readline.set_completer(completer)
 
@@ -127,6 +171,9 @@ def main():
         # exit builtin
         if parts[0] == "exit":
             break
+
+        elif parts[0] == "complete":
+            continue
 
         # echo builtin
         elif parts[0] == "echo":
