@@ -105,12 +105,31 @@ def get_path_by_completer_command(command: str) -> str:
         return path
 
 
+def remove_from_completer_command(command: str) -> str:
+    assert command in completer_commands
+    lines = []
+    with open(complete_file, READ_FLAG) as f:
+        file_data = f.read()
+        lines = file_data.split("\n")
+    index = lines.index(command)
+    assert (
+        index < len(lines) - 1
+    )  # asserting that format of the file is command\npath\ncommand\npath....
+    new_lines = lines[:index] + lines[index + 2 :]
+    debug_logger.debug(f"{new_lines=}")
+    with open(complete_file, WRITE_FLAG) as f:
+        f.write("\n".join(new_lines))
+    index = completer_commands.index(command)
+    completer_command = completer_commands[:index] + completer_commands[index + 2 :]
+
+
 def get_all_completer_commands() -> list[str]:
     try:
         with open(complete_file, READ_FLAG) as f:
             file_data = f.read()
             splitted = file_data.split("\n")
             commands = [x for index, x in enumerate(splitted) if index % 2 == 0]
+            commands = [x for x in commands if x != ""]
             return commands
     except OSError as E:
         return []
@@ -159,8 +178,9 @@ def process_complete(args: list):
     class Flags(enum.StrEnum):
         REGISTER_FLAG = "-C"
         PRINT_FLAG = "-p"
+        REMOVE_FLAG = "-r"
 
-    FLAGS = {Flags.REGISTER_FLAG, Flags.PRINT_FLAG}
+    FLAGS = {Flags.REGISTER_FLAG, Flags.PRINT_FLAG, Flags.REMOVE_FLAG}
     flag_pos = {}
     flag_args = {}
     max_flag_args_count = {}
@@ -173,6 +193,8 @@ def process_complete(args: list):
     min_flag_args_count[Flags.REGISTER_FLAG] = 2
     max_flag_args_count[Flags.PRINT_FLAG] = 1
     min_flag_args_count[Flags.PRINT_FLAG] = 1
+    min_flag_args_count[Flags.REMOVE_FLAG] = 1
+    max_flag_args_count[Flags.REMOVE_FLAG] = 1
 
     # throws CompleteNotFoundException if the command after -p is not found
     def perform_action_by_prevflag(flag: str):
@@ -204,7 +226,12 @@ def process_complete(args: list):
                 except ValueError as v:
                     debug_logger.debug("VALUE ERROR")
                     raise CompleteNotFoundException(command_to_search_for) from v
-
+            case Flags.REMOVE_FLAG:
+                command_to_remove = flag_args[flag][0]
+                debug_logger.debug(f"{command_to_remove=}, {completer_commands=}")
+                if command_to_remove not in completer_commands:
+                    return
+                remove_from_completer_command(command_to_remove)
             case _:
                 print(f"{flag} is the last prev flag")
 
@@ -229,14 +256,13 @@ def process_complete(args: list):
                     )
                 if arg in FLAGS:
                     perform_action_by_prevflag(prev_flag)
+            """
             if arg == Flags.REGISTER_FLAG:
                 debug_logger.debug("Arg is register flag.")
                 prev_flag = Flags.REGISTER_FLAG
                 flag_pos[Flags.REGISTER_FLAG] = index
                 if index >= len(args) - 2:
-                    raise InvalidArgumentException(
-                        "Must specify command script path and command after the -C flag."
-                    )
+                    raise InvalidArgumentException("Must specify command script path and command after the -C flag.")
                 continue
             if arg == Flags.PRINT_FLAG:
                 debug_logger.debug("Arg is print flag.")
@@ -245,9 +271,28 @@ def process_complete(args: list):
                 if index == len(args) - 1:
                     raise CompleteNotFoundException("")
                 continue
-            if prev_flag == Flags.PRINT_FLAG:
-                flag_args[prev_flag].append(arg)
-            if prev_flag == Flags.REGISTER_FLAG:
+            if arg == Flags.REMOVE_FLAG:
+                debug_logger.debug("Arg is remove flag.")
+                prev_flag = Flags.REMOVE_FLAG
+                flag_pos[arg] = index
+                if index == len(args) - 1:
+                    pass
+            """
+            if arg in FLAGS:
+                debug_logger.debug(f"Arg is {arg} flag")
+                prev_flag = arg
+                flag_pos[arg] = index
+                if index > len(args) - min_flag_args_count[flag]:
+                    if arg == Flags.PRINT_FLAG:
+                        raise CompleteNotFoundException("")
+                    elif arg == Flags.REMOVE_FLAG:
+                        pass
+                    else:
+                        raise InvalidArgumentException(
+                            f"Must specify command scrpt path and command after the {arg} flag."
+                        )
+                continue
+            if prev_flag in FLAGS:
                 flag_args[prev_flag].append(arg)
         debug_logger.debug(f"{flag_args=}")
         if prev_flag is not None:
