@@ -4,7 +4,10 @@ import os
 import pathlib
 import stat
 import subprocess
-import readline
+try:
+    import readline
+except ModuleNotFoundError:
+    readline = None
 from contextlib import redirect_stdout, redirect_stderr
 from collections import deque
 from app.custom_exceptions import DirectoryNotFoundException, InvalidStringException
@@ -104,7 +107,7 @@ def get_all_system_commands() -> list[str]:
             continue
         files = [f for f in p.iterdir()]
         for file in files:
-            file_suffix = str(file).split("/")[-1]
+            file_suffix = file.name
             if file_suffix not in rv_set:
                 rv.append(file_suffix)
             rv_set.add(file_suffix)
@@ -121,7 +124,7 @@ def get_command_path(command) -> str:
             continue
         files = [f for f in p.iterdir()]
         for file in files:
-            file_suffix = str(file).split("/")[-1]
+            file_suffix = file.name
             if file_suffix != command:
                 continue
             if check_file_mode(file, Permissions.executable, Permissions.other):
@@ -304,7 +307,7 @@ def process_cd(args: list):
         print(f"cd: {goal_path_str}: No such file or directory", file=sys.stderr)
     except TooManyArgumentsException:
         print("cd: Too many arguments", file=sys.stderr)
-    except OSError:
+    except OSError as e:
         sys.stderr.write(f"Error: {e}")
         sys.stderr.flush()
 
@@ -743,7 +746,7 @@ curr_str = ""
 # gnu readline completer function for tab completion on commands
 def complete(text, state):
     options = []
-    start = readline.get_begidx()
+    start = readline.get_begidx() if readline else 0
     # print(f"{start=} {text=}, {state=}")
     if start == 0:
         options = Commands.available_commands + list(
@@ -780,10 +783,10 @@ def complete(text, state):
 
 def main():
     debug_logger.debug("Started")
-    # line for tab completion
-    readline.parse_and_bind("tab: complete")
-    readline.set_completer(complete)
-    readline.set_completer_delims(" ")
+    if readline:
+        readline.parse_and_bind("tab: complete")
+        readline.set_completer(complete)
+        readline.set_completer_delims(" ")
     while True:
         msg = input("$ ")
         signal = process_command(msg)
