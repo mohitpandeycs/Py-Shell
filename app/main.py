@@ -782,6 +782,10 @@ def complete(text, state):
         argv[3] = ""
         if len(space_splitted_line_buffer) >= 2:
             argv[3] = space_splitted_line_buffer[len(space_splitted_line_buffer) - 2]
+        COMP_LINE = "COMP_LINE"
+        COMP_POINT = "COMP_POINT"
+        os.environ[COMP_LINE] = line_buffer
+        os.environ[COMP_POINT] = f"{len(line_buffer)}"
         result = subprocess.run(argv, stdout=subprocess.PIPE)
         decoded = result.stdout.decode("UTF-8")
         decoded = decoded[: len(decoded) - 1]
