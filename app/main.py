@@ -720,9 +720,9 @@ class TokenizedMessage:
                 continue
             prev_character_backslash = False
         if single_quote_one_found:
-            raise InvalidStringException("Invalid Quote Scheme")
+            raise InvalidStringException("Invalid Quote Schemes")
         if double_quote_one_found:
-            raise InvalidStringException("Invalid Quote Scheme")
+            raise InvalidStringException("Invalid Quote Schemes")
         return single_quote_index_pairs, double_quote_index_pairs, backslash_indices
 
     # returns tokens of a command i.e. [echo, arg1, arg2, ... argn]
