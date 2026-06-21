@@ -16,9 +16,12 @@ from app.builtin import (
     initShellVars,
     findExeFiles,
     complete,
+    HISTORY,
+    history,
 )
 
 # from builtin import (
+#     HISTORY,
 #     cd,
 #     complete,
 #     history,
@@ -186,6 +189,8 @@ def main():
         # sys.stdout.write("$ ")
         # commandline
         commandLine = [arg for arg in input("$ ").strip(" ").split(" ")]
+        # TODO:add command + args to history
+        HISTORY.append(" ".join(commandLine))
 
         # # split the command and the args
         # command = commandLine[0]
