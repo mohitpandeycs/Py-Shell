@@ -2,12 +2,14 @@ import readline
 import subprocess
 import sys
 import os
+import re
 from io import StringIO
 
 jobs = []
 history = []
 variables = {}
 history_cursor = 0
+VAR_PATTERN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def find_executable_path(target):
@@ -505,6 +507,15 @@ def is_valid_identifier(name):
     return all(c.isalnum() or c == "_" for c in name)
 
 
+def expand_variables(parts):
+    expanded = []
+
+    for part in parts:
+        expanded.append(VAR_PATTERN.sub(lambda m: variables.get(m.group(1), ""), part))
+
+    return expanded
+
+
 BUILTIN_HANDLERS = {
     "echo": builtin_echo,
     "pwd": builtin_pwd,
@@ -546,6 +557,8 @@ def main():
         parts, stdout_file, stderr_file, append_stdout, append_stderr = (
             extract_redirection(parts)
         )
+
+        parts = expand_variables(parts)
 
         stdout_stream = sys.stdout
         stderr_stream = sys.stderr
