@@ -46,7 +46,7 @@ BUILTIN_COMMANDS = {
     "cd": lambda ctx: cd(ctx["args"]),
     "complete": lambda ctx: complete(ctx["args"]),
     "jobs": lambda ctx: jobs(ctx["args"]),
-    "history": lambda ctx: history(),
+    "history": lambda ctx: history(ctx["args"]),
 }
 
 
