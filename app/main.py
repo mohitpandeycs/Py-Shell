@@ -1,441 +1,594 @@
-import sys
-import shutil
-import subprocess
-import os
 import readline
+import subprocess
+import sys
+import os
+from io import StringIO
 
-# Global list to track our command history
-HISTORY_LIST = []
-HISTORY_APPEND_INDEX = 0
-
-
-def get_history_output(num=None):
-    output = ""
-    history_to_show = HISTORY_LIST
-    start_num = 1
-
-    if num is not None:
-        try:
-            num = int(num)
-            if num < 0:
-                raise ValueError
-
-            # Slice the list to get only the last 'n' items
-            start_index = max(0, len(HISTORY_LIST) - num)
-            history_to_show = HISTORY_LIST[start_index:]
-            # Calculate the correct starting number so history IDs don't reset to 1
-            start_num = start_index + 1
-
-        except ValueError:
-            return "history: usage: history [n]\n"
-
-    for i, cmd in enumerate(history_to_show, start_num):
-        output += f"{i:>5}  {cmd}\n"
-
-    return output
+jobs = []
+history = []
+variables = {}
+history_cursor = 0
 
 
-def run_history(args):
-    global HISTORY_APPEND_INDEX  # Tell Python we want to modify our global bookmark
+def find_executable_path(target):
+    path_env = os.environ.get("PATH", "")
 
-    # No arguments: just print all history
-    if not args:
-        return get_history_output(None)
+    for directory in path_env.split(os.pathsep):
+        full_path = os.path.join(directory, target)
 
-    # Handle the "-r" flag to read from a file
-    if args[0] == "-r":
-        if len(args) > 1:
-            filepath = args[1]
-            try:
-                with open(filepath, "r") as f:
-                    for line in f:
-                        cmd = line.strip()
-                        if cmd:
-                            HISTORY_LIST.append(cmd)
-            except FileNotFoundError:
-                pass
+        if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
+            return full_path
 
-            # Fast-forward our bookmark so we don't accidentally write
-            # these newly read commands back to the file later.
-            HISTORY_APPEND_INDEX = len(HISTORY_LIST)
-        return ""
-
-    # Handle the "-w" flag to write EVERYTHING to a file
-    if args[0] == "-w":
-        if len(args) > 1:
-            filepath = args[1]
-            with open(filepath, "w") as f:
-                for cmd in HISTORY_LIST:
-                    f.write(f"{cmd}\n")
-
-            # We just wrote everything, so move the bookmark to the end
-            HISTORY_APPEND_INDEX = len(HISTORY_LIST)
-        return ""
-
-    # NEW: Handle the "-a" flag to APPEND only new commands
-    if args[0] == "-a":
-        if len(args) > 1:
-            filepath = args[1]
-            # 'a' mode opens the file for appending instead of overwriting
-            with open(filepath, "a") as f:
-                # Slice the list to only get commands AFTER our bookmark
-                for cmd in HISTORY_LIST[HISTORY_APPEND_INDEX:]:
-                    f.write(f"{cmd}\n")
-
-            # Move the bookmark to the very end of the list
-            HISTORY_APPEND_INDEX = len(HISTORY_LIST)
-        return ""
-
-    # Otherwise, assume the argument is a number (e.g., "history 5")
-    return get_history_output(args[0])
+    return None
 
 
-def setup_autocompletion():
-    builtin_commands = ["echo", "exit", "type", "pwd", "cd", "history"]
-    completion_matches = []
+def parse_command(line):
+    parts = []
+    current = []
 
-    def completer(text, state):
-        nonlocal completion_matches
+    in_single_quotes = False
+    in_double_quotes = False
 
-        if state == 0:
-            matches = set()
+    i = 0
 
-            # 1. Add matching built-in commands
-            for cmd in builtin_commands:
-                if cmd.startswith(text):
-                    matches.add(cmd)
+    while i < len(line):
+        char = line[i]
 
-            # 2. Add matching external executables from PATH
-            path_env = os.environ.get("PATH", "")
-            if path_env:
-                for directory in path_env.split(os.pathsep):
-                    if os.path.isdir(directory):
-                        try:
-                            for filename in os.listdir(directory):
-                                if filename.startswith(text):
-                                    filepath = os.path.join(directory, filename)
-                                    if os.path.isfile(filepath) and os.access(
-                                        filepath, os.X_OK
-                                    ):
-                                        matches.add(filename)
-                        except Exception:
-                            pass
+        # signle quotes mode
+        if char == "'" and not in_double_quotes:
+            in_single_quotes = not in_single_quotes
 
-            completion_matches = sorted(list(matches))
+        # double quotes mode
+        elif char == '"' and not in_single_quotes:
+            in_double_quotes = not in_double_quotes
 
-        if state < len(completion_matches):
-            return completion_matches[state] + " "
-        else:
-            return None
+        # backslash outisde quotes
+        elif char == "\\" and not in_single_quotes and not in_double_quotes:
+            i += 1
 
-    readline.set_completer(completer)
+            if i < len(line):
+                current.append(line[i])
 
-    if "libedit" in readline.__doc__:
-        readline.parse_and_bind("bind ^I rl_complete")
-    else:
-        readline.parse_and_bind("tab: complete")
-
-
-def parse_args(command_string):
-    args = []
-    current_token = []
-    quote_char = None
-    escaped = False
-
-    for char in command_string:
-        if escaped:
-            if quote_char == '"' and char not in ('"', "\\", "$", "\n"):
-                current_token.append("\\")
-
-            current_token.append(char)
-            escaped = False
-
-        elif char == "\\" and quote_char is None:
-            escaped = True
-
-        elif char == "\\" and quote_char == '"':
-            escaped = True
-
-        elif char in ('"', "'"):
-            if quote_char is None:
-                quote_char = char
-            elif quote_char == char:
-                quote_char = None
+        # backslash inside double quotes
+        elif char == "\\" and in_double_quotes:
+            if i + 1 < len(line) and line[i + 1] in ["\\", '"']:
+                i += 1
+                current.append(line[i])
             else:
-                current_token.append(char)
+                current.append(char)
 
-        elif char == " " and quote_char is None:
-            if current_token:
-                args.append("".join(current_token))
-                current_token = []
+        # token seperator
+        elif char == " " and not in_single_quotes and not in_double_quotes:
+            if current:
+                parts.append("".join(current))
+                current = []
+
+        # normal charachter
+        else:
+            current.append(char)
+
+        i += 1
+
+    if current:
+        parts.append("".join(current))
+
+    return parts
+
+
+def extract_redirection(parts):
+    stdout_file = None
+    stderr_file = None
+
+    append_stdout = False
+    append_stderr = False
+
+    cleaned_parts = []
+
+    i = 0
+
+    while i < len(parts):
+        if parts[i] in [">", "1>"]:
+            stdout_file = parts[i + 1]
+            i += 2
+
+        elif parts[i] in [">>", "1>>"]:
+            stdout_file = parts[i + 1]
+            append_stdout = True
+            i += 2
+
+        elif parts[i] == "2>":
+            stderr_file = parts[i + 1]
+            i += 2
+
+        elif parts[i] == "2>>":
+            stderr_file = parts[i + 1]
+            append_stderr = True
+            i += 2
 
         else:
-            current_token.append(char)
+            cleaned_parts.append(parts[i])
+            i += 1
 
-    if current_token:
-        args.append("".join(current_token))
-
-    return args
+    return cleaned_parts, stdout_file, stderr_file, append_stdout, append_stderr
 
 
-def echo(args):
-    print(" ".join(args))
+def write_output(output, stdout_stream):
+    stdout_stream.write(output)
+    stdout_stream.flush()
 
 
-def type_command(args):
-    if not args:
-        print("type: usage: type name")
+def write_error(error, stderr_stream):
+    stderr_stream.write(error)
+    stderr_stream.flush()
+
+
+def completer(text, state):
+    line = readline.get_line_buffer()
+
+    if " " not in line:
+        matches = complete_commands(text)
+    else:
+        matches = complete_filenames(text)
+
+    if state < len(matches):
+        return matches[state]
+
+    return None
+
+
+def get_executables():
+    executables = set()
+
+    path_env = os.environ.get("PATH", "")
+
+    for directory in path_env.split(os.pathsep):
+        if not os.path.isdir(directory):
+            continue
+
+        try:
+            for entry in os.listdir(directory):
+                full_path = os.path.join(directory, entry)
+
+                if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
+                    executables.add(entry)
+
+        except OSError:
+            pass
+
+    return executables
+
+
+def complete_commands(text):
+    commands = set(BUILTIN_HANDLERS)
+    commands.update(get_executables())
+
+    return sorted(command + " " for command in commands if command.startswith(text))
+
+
+def complete_filenames(text):
+    matches = []
+
+    if "/" in text:
+        directory, prefix = text.rsplit("/", 1)
+
+        try:
+            for entry in os.listdir(directory):
+                if entry.startswith(prefix):
+                    full_path = os.path.join(directory, entry)
+
+                    if os.path.isdir(full_path):
+                        matches.append(f"{directory}/{entry}/")
+                    else:
+                        matches.append(f"{directory}/{entry} ")
+
+        except OSError:
+            pass
+
+    else:
+        for entry in os.listdir("."):
+            if entry.startswith(text):
+                if os.path.isdir(entry):
+                    matches.append(entry + "/")
+                else:
+                    matches.append(entry + " ")
+
+    return sorted(matches)
+
+
+def reap_jobs(stdout_stream):
+    jobs_to_remove = []
+
+    for index, job in enumerate(jobs):
+        if job["process"].poll() is None:
+            continue
+
+        if index == len(jobs) - 1:
+            marker = "+"
+        elif index == len(jobs) - 2:
+            marker = "-"
+        else:
+            marker = " "
+
+        command_text = job["command"].removesuffix(" &")
+
+        output = f"[{job['job_id']}]{marker}  {'Done':<24}{command_text}\n"
+
+        write_output(output, stdout_stream)
+
+        jobs_to_remove.append(job)
+
+    for job in jobs_to_remove:
+        jobs.remove(job)
+
+
+readline.set_completer(completer)
+readline.parse_and_bind("tab: complete")
+readline.set_completer_delims(" \t\n")
+
+
+def split_pipeline(parts):
+    commands = []
+    current = []
+
+    for token in parts:
+        if token == "|":
+            commands.append(current)
+            current = []
+        else:
+            current.append(token)
+
+    commands.append(current)
+
+    return commands
+
+
+def run_pipeline(commands):
+    processes = []
+
+    previous_pipe = None
+
+    for index, command in enumerate(commands):
+        last_command = index == len(commands) - 1
+
+        # BUILTIN
+        if is_builtin(command[0]):
+            if previous_pipe:
+                previous_pipe.close()
+
+            output = run_builtin_capture(command)
+
+            if last_command:
+                sys.stdout.buffer.write(output)
+                sys.stdout.flush()
+
+            else:
+                read_end, write_end = os.pipe()
+
+                os.write(write_end, output)
+
+                os.close(write_end)
+
+                previous_pipe = os.fdopen(read_end, "rb")
+
+        # EXTERNAL
+        else:
+            stdout_target = None if last_command else subprocess.PIPE
+
+            process = subprocess.Popen(
+                command, stdin=previous_pipe, stdout=stdout_target
+            )
+
+            if previous_pipe:
+                previous_pipe.close()
+
+            if not last_command:
+                previous_pipe = process.stdout
+
+            processes.append(process)
+
+    for process in processes:
+        process.wait()
+
+
+def run_builtin_capture(parts):
+    buffer = StringIO()
+
+    BUILTIN_HANDLERS[parts[0]](parts, buffer, sys.stderr)
+
+    return buffer.getvalue().encode()
+
+
+def builtin_echo(parts, stdout_stream, stderr_stream):
+    write_output(" ".join(parts[1:]) + "\n", stdout_stream)
+
+
+def builtin_pwd(parts, stdout_stream, stderr_stream):
+    write_output(os.getcwd() + "\n", stdout_stream)
+
+
+def builtin_type(parts, stdout_stream, stderr_stream):
+    if len(parts) < 2:
         return
 
-    builtin_commands = ["echo", "exit", "type", "pwd", "cd", "history"]
-    if args in builtin_commands:
-        print(f"{args} is a shell builtin")
-    elif path := shutil.which(args):
-        print(f"{args} is {path}")
+    target = parts[1]
+
+    if target in BUILTIN_HANDLERS:
+        output = f"{target} is a shell builtin\n"
     else:
-        print(f"{args} not found")
+        executable_path = find_executable_path(target)
+
+        if executable_path:
+            output = f"{target} is {executable_path}\n"
+        else:
+            output = f"{target}: not found\n"
+
+    write_output(output, stdout_stream)
 
 
-def printdirectory():
-    print(os.getcwd())
+def builtin_cd(parts, stdout_stream, stderr_stream):
+    if len(parts) < 2:
+        path = os.environ.get("HOME", "")
+    else:
+        path = parts[1]
 
-
-def change_directory(path=None):
-    if not path or path == "~":
-        path = os.path.expanduser("~")
+    if path == "~":
+        path = os.environ.get("HOME", "")
 
     try:
         os.chdir(path)
     except FileNotFoundError:
-        print(f"cd: {path}: No such file or directory", file=sys.stderr)
+        write_error(f"cd: {path}: No such file or directory\n", stderr_stream)
+
+
+def builtin_jobs(parts, stdout_stream, stderr_stream):
+    jobs_to_remove = []
+
+    for index, job in enumerate(jobs):
+        if index == len(jobs) - 1:
+            marker = "+"
+        elif index == len(jobs) - 2:
+            marker = "-"
+        else:
+            marker = " "
+
+        if job["process"].poll() is None:
+            status = "Running"
+            command_text = job["command"]
+        else:
+            status = "Done"
+            command_text = job["command"].removesuffix(" &")
+            jobs_to_remove.append(job)
+
+        output = f"[{job['job_id']}]{marker}  {status:<24}{command_text}\n"
+
+        write_output(output, stdout_stream)
+
+    for job in jobs_to_remove:
+        jobs.remove(job)
+
+
+def builtin_exit(parts, stdout_stream, stderr_stream):
+    save_history_on_exit()
+
+    sys.exit(0)
+
+
+def builtin_history(parts, stdout_stream, stderr_stream):
+    if len(parts) == 3:
+        flag = parts[1]
+        path = parts[2]
+
+        try:
+            if flag == "-r":
+                history_read(path)
+                return
+
+            if flag == "-w":
+                history_write(path)
+                return
+
+            if flag == "-a":
+                history_append(path)
+                return
+
+        except OSError:
+            return
+
+    # history <n>
+    if len(parts) > 1:
+        try:
+            limit = int(parts[1])
+
+            start_index = max(0, len(history) - limit)
+
+            entries = history[start_index:]
+
+        except ValueError:
+            return
+
+    else:
+        start_index = 0
+        entries = history
+
+    for index, command in enumerate(entries, start=start_index + 1):
+        write_output(f"    {index}  {command}\n", stdout_stream)
+
+
+def history_read(path):
+    global history_cursor
+
+    with open(path, "r") as file:
+        for line in file:
+            command = line.rstrip("\n")
+            if command:
+                history.append(command)
+
+    history_cursor = len(history)
+
+
+def history_write(path):
+    global history_cursor
+
+    with open(path, "w") as file:
+        for command in history:
+            file.write(command + "\n")
+
+    history_cursor = len(history)
+
+
+def history_append(path):
+    global history_cursor
+
+    with open(path, "a") as file:
+        for command in history[history_cursor:]:
+            file.write(command + "\n")
+
+    history_cursor = len(history)
 
 
 def load_history_on_startup():
-    global HISTORY_APPEND_INDEX
-
-    # Check if the OS provided a HISTFILE path
     histfile = os.environ.get("HISTFILE")
-    if histfile:
-        try:
-            with open(histfile, "r") as f:
-                for line in f:
-                    cmd = line.strip()
-                    if cmd:
-                        HISTORY_LIST.append(cmd)
 
-            # Fast-forward our bookmark so we don't duplicate these later
-            HISTORY_APPEND_INDEX = len(HISTORY_LIST)
-        except FileNotFoundError:
-            pass  # It's normal for this file not to exist on the very first boot
+    if not histfile:
+        return
+
+    try:
+        history_read(histfile)
+    except OSError:
+        pass
 
 
 def save_history_on_exit():
-    # Check if the OS provided a HISTFILE path
     histfile = os.environ.get("HISTFILE")
-    if histfile:
-        try:
-            # 'a' mode appends safely to the end of the file
-            with open(histfile, "a") as f:
-                # Slice from the bookmark to the end so we don't write duplicates
-                for cmd in HISTORY_LIST[HISTORY_APPEND_INDEX:]:
-                    f.write(f"{cmd}\n")
-        except Exception:
-            pass  # Fail silently if we don't have write permissions
+
+    if not histfile:
+        return
+
+    try:
+        history_write(histfile)
+    except OSError:
+        pass
 
 
-def multipipelines(commands):
-    builtin_commands = ["echo", "exit", "type", "pwd", "cd", "history"]
+def builtin_declare(parts, stdout_stream, stderr_stream):
+    # declare -p NAME
+    if len(parts) == 3 and parts[1] == "-p":
+        name = parts[2]
 
-    # 1. SPLIT COMMANDS INTO CHUNKS
-    chunks = []
-    temp = []
-    for token in commands:
-        if token == "|":
-            chunks.append(temp)
-            temp = []
+        if name in variables:
+            write_output(f'declare -- {name}="{variables[name]}"\n', stdout_stream)
         else:
-            temp.append(token)
-    chunks.append(temp)
+            write_error(f"declare: {name}: not found\n", stderr_stream)
+        return
 
-    # 2. BUILD THE ASSEMBLY LINE
-    processes = []
-    prev_process = None
-    prev_output_str = None
+    # declare Name=valur
+    if len(parts) == 2 and "=" in parts[1]:
+        name, value = parts[1].split("=", 1)
+        variables[name] = value
 
-    for i, cmd in enumerate(chunks):
-        is_last_command = i == len(chunks) - 1
 
-        if cmd[0] in builtin_commands:
-            # --- HANDLE PYTHON BUILT-INS ---
-            if prev_process:
-                prev_process.stdout.close()
-                prev_process = None
+BUILTIN_HANDLERS = {
+    "echo": builtin_echo,
+    "pwd": builtin_pwd,
+    "type": builtin_type,
+    "cd": builtin_cd,
+    "jobs": builtin_jobs,
+    "history": builtin_history,
+    "exit": builtin_exit,
+    "declare": builtin_declare,
+}
 
-            output_str = ""
-            if cmd[0] == "echo":
-                output_str = " ".join(cmd[1:]) + "\n"
-            elif cmd[0] == "pwd":
-                output_str = os.getcwd() + "\n"
-            elif cmd[0] == "cd":
-                change_directory(cmd[1] if len(cmd) > 1 else None)
-            elif cmd[0] == "exit":
-                save_history_on_exit()  # NEW: Save before exiting via pipeline
-                sys.exit(0)
-            elif cmd[0] == "history":
-                output_str = run_history(cmd[1:])
-            elif cmd[0] == "type":
-                arg = cmd[1] if len(cmd) > 1 else ""
-                if not arg:
-                    output_str = "type: usage: type name\n"
-                elif arg in builtin_commands:
-                    output_str = f"{arg} is a shell builtin\n"
-                elif p := shutil.which(arg):
-                    output_str = f"{arg} is {p}\n"
-                else:
-                    output_str = f"{arg} not found\n"
 
-            # Route the output
-            if is_last_command:
-                sys.stdout.write(output_str)
-                sys.stdout.flush()
-            else:
-                prev_output_str = output_str
-
-        else:
-            # --- HANDLE EXTERNAL OS COMMANDS ---
-            try:
-                stdin_stream = None
-                if prev_process:
-                    stdin_stream = prev_process.stdout
-                elif prev_output_str is not None:
-                    stdin_stream = subprocess.PIPE
-
-                stdout_stream = None if is_last_command else subprocess.PIPE
-
-                p = subprocess.Popen(cmd, stdin=stdin_stream, stdout=stdout_stream)
-
-                if prev_process:
-                    prev_process.stdout.close()
-                elif prev_output_str is not None:
-                    p.stdin.write(prev_output_str.encode())
-                    p.stdin.close()
-                    prev_output_str = None
-
-                prev_process = p
-                processes.append(p)
-
-            except FileNotFoundError:
-                print(f"{cmd[0]}: command not found", file=sys.stderr)
-                return
-            except Exception as e:
-                print(str(e), file=sys.stderr)
-                return
-
-    # 3. WAIT FOR COMPLETION
-    for p in processes:
-        p.wait()
+def is_builtin(command):
+    return command in BUILTIN_HANDLERS
 
 
 def main():
-    load_history_on_startup()
-    setup_autocompletion()
+    while True:
+        reap_jobs(sys.stdout)
 
-    while 1:
         try:
-            command = input("$ ")
-            if command.strip():
-                HISTORY_LIST.append(command)
+            line = input("$ ")
         except EOFError:
-            save_history_on_exit()  # NEW: Save on Ctrl+D
             break
 
-        commands = parse_args(command)
+        if line.strip():
+            history.append(line)
 
-        if not commands:
-            continue
+        original_command = line
 
-        redirect_file = None
-        redirect_stream = None
-        operation = None
+        parts = parse_command(line)
 
-        # REDIRECTION LOGIC
-        if "|" in commands:
-            multipipelines(commands)
-            continue
+        background = False
 
-        elif "2>" in commands:
-            idx = commands.index("2>")
-            redirect_stream = "stderr"
-            commands.pop(idx)
-            redirect_file = commands.pop(idx)
-            operation = "w"
+        if parts and parts[-1] == "&":
+            background = True
+            parts.pop()
 
-        elif "2>>" in commands:
-            idx = commands.index("2>>")
-            redirect_stream = "stderr"
-            commands.pop(idx)
-            redirect_file = commands.pop(idx)
-            operation = "a"
+        parts, stdout_file, stderr_file, append_stdout, append_stderr = (
+            extract_redirection(parts)
+        )
 
-        elif ">" in commands or "1>" in commands:
-            op = "1>" if "1>" in commands else ">"
-            idx = commands.index(op)
-            redirect_stream = "stdout"
-            commands.pop(idx)
-            redirect_file = commands.pop(idx)
-            operation = "w"
+        stdout_stream = sys.stdout
+        stderr_stream = sys.stderr
 
-        elif ">>" in commands or "1>>" in commands:
-            op = "1>>" if "1>>" in commands else ">>"
-            idx = commands.index(op)
-            redirect_stream = "stdout"
-            commands.pop(idx)
-            redirect_file = commands.pop(idx)
-            operation = "a"
-
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        output_file_handle = None
-
-        if redirect_file:
-            output_file_handle = open(redirect_file, operation)
-            if redirect_stream == "stdout":
-                sys.stdout = output_file_handle
-            elif redirect_stream == "stderr":
-                sys.stderr = output_file_handle
-
+        opened_streams = []
         try:
-            if commands[0] == "exit":
-                save_history_on_exit()  # NEW: Save before single-command exit
-                sys.exit(0)
-            elif commands[0] == "echo":
-                echo(commands[1:])
-            elif commands[0] == "type":
-                type_command(commands[1] if len(commands) > 1 else "")
-            elif commands[0] == "pwd":
-                printdirectory()
-            elif commands[0] == "cd":
-                change_directory(commands[1] if len(commands) > 1 else None)
-            elif commands[0] == "history":
-                output = run_history(commands[1:])
-                if output:
-                    print(output, end="")
-            elif path := shutil.which(commands[0]):
-                if redirect_stream == "stdout":
-                    subprocess.run(commands, stdout=output_file_handle)
-                elif redirect_stream == "stderr":
-                    subprocess.run(commands, stderr=output_file_handle)
-                else:
-                    subprocess.run(commands)
-            else:
-                print(f"{commands[0]}: command not found", file=sys.stderr)
+            if stdout_file:
+                mode = "a" if append_stdout else "w"
+                stdout_stream = open(stdout_file, mode)
+                opened_streams.append(stdout_stream)
 
+            if stderr_file:
+                mode = "a" if append_stderr else "w"
+                stderr_stream = open(stderr_file, mode)
+                opened_streams.append(stderr_stream)
+
+            # Empty input
+            if len(parts) == 0:
+                continue
+
+            if "|" in parts:
+                commands = split_pipeline(parts)
+
+                run_pipeline(commands)
+
+                continue
+
+            command = parts[0]  # first part of the line is the command
+
+            if is_builtin(command):
+                BUILTIN_HANDLERS[command](parts, stdout_stream, stderr_stream)
+
+            # unknown command
+            else:
+                executable_path = find_executable_path(command)
+
+                if executable_path:
+                    if background:
+                        process = subprocess.Popen(parts)
+
+                        jobs.append(
+                            {
+                                "job_id": len(jobs) + 1,
+                                "pid": process.pid,
+                                "command": original_command,
+                                "process": process,
+                            }
+                        )
+
+                        write_output(f"[{len(jobs)}] {process.pid}\n", stdout_stream)
+                    else:
+                        subprocess.run(
+                            parts, stdout=stdout_stream, stderr=stderr_stream
+                        )
+                else:
+                    write_error(f"{command}: command not found\n", stderr_stream)
         finally:
-            if output_file_handle:
-                sys.stdout = original_stdout
-                sys.stderr = original_stderr
-                output_file_handle.close()
+            for stream in opened_streams:
+                stream.close()
 
 
 if __name__ == "__main__":
+    load_history_on_startup()
     main()
