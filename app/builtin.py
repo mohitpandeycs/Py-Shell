@@ -1,5 +1,5 @@
 import subprocess
-from typing import List, Dict, Literal
+from typing import List, Dict, Literal, Optional
 import os
 
 BUILTIN_COMMANDS = ["exit", "echo", "type", "pwd", "cd", "complete", "jobs", "history"]
@@ -241,6 +241,13 @@ def jobs(args: List[str], mode: Literal["auto", "manual"] = "manual"):
         print(f"[{currId}] {pid}")
 
 
-def history():
-    for idx, line in enumerate(HISTORY):
+def history(args: Optional[List[str]]):
+    n = len(HISTORY)
+
+    if args and args[0].isnumeric():
+        n = int(args[0])
+
+    startIdx = len(HISTORY) - n
+    for idx in range(startIdx, len(HISTORY)):
+        line = HISTORY[idx]
         print(f"    {idx + 1}  {line}")
