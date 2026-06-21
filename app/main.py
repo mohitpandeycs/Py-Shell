@@ -54,26 +54,84 @@ def main():
             command_parts[-1] = command_parts[-1][:-1]
 
         if "|" in command_parts:
-            pipe_idx = command_parts.index("|")
-            cmd1_parts = command_parts[:pipe_idx]
-            cmd2_parts = command_parts[pipe_idx + 1 :]
+            pipeline_cmds = []
+            current_cmd = []
+            for part in command_parts:
+                if part == "|":
+                    if current_cmd:
+                        pipeline_cmds.append(current_cmd)
+                        current_cmd = []
+                else:
+                    current_cmd.append(part)
+            if current_cmd:
+                pipeline_cmds.append(current_cmd)
 
-            if not cmd1_parts or not cmd2_parts:
+            if not pipeline_cmds:
                 continue
 
-            path1 = shutil.which(cmd1_parts[0])
-            path2 = shutil.which(cmd2_parts[0])
+            processes = []
+            prev_stdout = None
 
-            if path1 and path2:
-                p1 = subprocess.Popen(cmd1_parts, stdout=subprocess.PIPE)
-                p2 = subprocess.Popen(cmd2_parts, stdin=p1.stdout)
-                p1.stdout.close()
-                p2.communicate()
-            else:
-                if not path1:
-                    print(f"{cmd1_parts[0]}: not found")
-                if not path2:
-                    print(f"{cmd2_parts[0]}: not found")
+            for i, cmd in enumerate(pipeline_cmds):
+                is_last = i == len(pipeline_cmds) - 1
+                stdout_target = sys.stdout if is_last else subprocess.PIPE
+
+                prog = cmd[0]
+                args = cmd[1:]
+
+                if prog == "echo":
+                    output = " ".join(args) + "\n"
+                    p = subprocess.Popen(
+                        ["echo", output.strip()],
+                        stdin=prev_stdout,
+                        stdout=stdout_target,
+                        text=True,
+                    )
+                elif prog == "pwd":
+                    output = os.getcwd() + "\n"
+                    p = subprocess.Popen(
+                        ["echo", output.strip()],
+                        stdin=prev_stdout,
+                        stdout=stdout_target,
+                        text=True,
+                    )
+                elif prog == "type":
+                    if args:
+                        target = args[0]
+                        if target in ["echo", "exit", "type", "pwd", "cd", "jobs"]:
+                            output = f"{target} is a shell builtin"
+                        else:
+                            path = shutil.which(target)
+                            if path:
+                                output = f"{target} is {path}"
+                            else:
+                                output = f"{target}: not found"
+                    else:
+                        output = ""
+                    p = subprocess.Popen(
+                        ["echo", output],
+                        stdin=prev_stdout,
+                        stdout=stdout_target,
+                        text=True,
+                    )
+                else:
+                    path = shutil.which(prog)
+                    if path:
+                        p = subprocess.Popen(
+                            cmd, stdin=prev_stdout, stdout=stdout_target
+                        )
+                    else:
+                        print(f"{prog}: not found")
+                        break
+
+                if prev_stdout:
+                    prev_stdout.close()
+
+                prev_stdout = p.stdout
+                processes.append(p)
+
+            if processes:
+                processes[-1].communicate()
             continue
 
         stdout_file = None
