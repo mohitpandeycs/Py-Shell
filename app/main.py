@@ -479,12 +479,30 @@ def builtin_declare(parts, stdout_stream, stderr_stream):
             write_output(f'declare -- {name}="{variables[name]}"\n', stdout_stream)
         else:
             write_error(f"declare: {name}: not found\n", stderr_stream)
+
         return
 
-    # declare Name=valur
+    # declare NAME=value
     if len(parts) == 2 and "=" in parts[1]:
         name, value = parts[1].split("=", 1)
+
+        if not is_valid_identifier(name):
+            write_error(
+                f"declare: `{parts[1]}': not a valid identifier\n", stderr_stream
+            )
+            return
+
         variables[name] = value
+
+
+def is_valid_identifier(name):
+    if not name:
+        return False
+
+    if not (name[0].isalpha() or name[0] == "_"):
+        return False
+
+    return all(c.isalnum() or c == "_" for c in name)
 
 
 BUILTIN_HANDLERS = {
