@@ -60,7 +60,11 @@ def _cd(*args) -> int:
         return 1
 
 
+LAST_HISTORY_APPEND_INDEX = 0
+
+
 def _history(*args) -> int:
+    global LAST_HISTORY_APPEND_INDEX
     history_items = [
         f"    {i + 1}  {readline.get_history_item(i + 1)}"
         for i in range(readline.get_current_history_length())
@@ -79,6 +83,12 @@ def _history(*args) -> int:
                 readline.add_history(item)
         if args[0] == "-w":
             readline.write_history_file(args[1])
+        if args[0] == "-a":
+            readline.append_history_file(
+                len(history_items) - LAST_HISTORY_APPEND_INDEX, args[1]
+            )
+            LAST_HISTORY_APPEND_INDEX = len(history_items)
+
     return 0
 
 
@@ -326,15 +336,16 @@ VALID_COMMANDS = {
 
 
 def main():
+    HISTFILE = os.environ.get("HISTFILE")
     readline.set_completer(autocomplete)
     if "libedit" in readline.__doc__:
         readline.parse_and_bind("bind ^I rl_complete")
     else:
         readline.parse_and_bind("tab: complete")
-    if os.path.exists("~/.history"):
-        readline.read_history_file()
+    if HISTFILE is not None and os.path.exists(HISTFILE):
+        _history("-r", HISTFILE)
     repl()
-    readline.write_history_file()
+    readline.write_history_file(HISTFILE)
 
 
 if __name__ == "__main__":
