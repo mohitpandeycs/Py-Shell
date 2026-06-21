@@ -1,319 +1,340 @@
 import os
-import shlex
-import subprocess
-import shutil
-import sys
 import readline
-from contextlib import redirect_stdout, redirect_stderr, nullcontext
-from pathlib import Path
+import subprocess
+import sys
+from functools import cache
+
+from typing import Callable, Dict, List, Optional, Tuple
 
 
-def parse_input(user_input):
-    command_with_args = shlex.split(user_input)
-
-    if "|" in command_with_args:
-        return {
-            "type": "pipeline",
-            "commands": parse_pipeline(command_with_args),
-        }
-
-    stderr_file = None
-    stdout_file = None
-    stdout_mode = "w"
-    stderr_mode = "w"
-    args = []
-
-    i = 0
-    while i < len(command_with_args):
-        tok = command_with_args[i]
-
-        match tok:
-            case ">" | "1>":
-                stdout_file = command_with_args[i + 1]
-                i += 2
-            case ">>" | "1>>":
-                stdout_file = command_with_args[i + 1]
-                stdout_mode = "a"
-                i += 2
-            case "2>":
-                stderr_file = command_with_args[i + 1]
-                i += 2
-            case "2>>":
-                stderr_file = command_with_args[i + 1]
-                stderr_mode = "a"
-                i += 2
-            case _:
-                args.append(tok)
-                i += 1
-
-    return {
-        "type": "simple",
-        "command": args,
-        "stdout": (stdout_file, stdout_mode),
-        "stderr": (stderr_file, stderr_mode),
-    }
+def _exit(*args: str) -> int:
+    return -1
 
 
-def parse_pipeline(command_with_args):
-    commands = []
-    current = []
-    for token in command_with_args:
-        if token == "|":
-            if not current:
-                raise ValueError("invalid pipeline")
-            commands.append(current)
-            current = []
-        else:
-            current.append(token)
-
-    if not current:
-        raise ValueError("invalid pipeline")
-
-    commands.append(current)
-    return commands
+def _echo(*args: str) -> int:
+    print(*args)
+    return 0
 
 
-def run_pipeline(commands):
-    processes = []
-    prev_pipe_r = None
+def _type(*args) -> int:
+    if len(args) == 0:
+        return 1
+    cmd = args[0]
+    fn = _get_exec(cmd)
+    if fn is not None:
+        print(f"{cmd} is a shell builtin")
+        return 0
+    path: Optional[str] = _get_external_cmd(cmd)
+    if path is not None:
+        print(f"{cmd} is {path}")
+        return 0
 
-    for i, cmd in enumerate(commands):
-        old_stdin = sys.stdin
-        old_stdout = sys.stdout
-
-        if i == len(commands) - 1:
-            stdout_target = None
-        else:
-            pipe_r, pipe_w = os.pipe()
-            stdout_target = os.fdopen(pipe_w, "w")
-
-        stdin_target = os.fdopen(prev_pipe_r, "r") if prev_pipe_r is not None else None
-
-        try:
-            if cmd[0] in BUILTINS:
-                if stdin_target:
-                    sys.stdin = stdin_target
-                if stdout_target:
-                    sys.stdout = stdout_target
-                BUILTINS[cmd[0]](*cmd[1:])
-            elif shutil.which(cmd[0]):
-                process = subprocess.Popen(
-                    cmd,
-                    stdin=stdin_target,
-                    stdout=stdout_target if stdout_target else sys.stdout,
-                    stderr=sys.stderr,
-                )
-                processes.append(process)
-            else:
-                print(f"{cmd[0]}: command not found", file=sys.stderr)
-        finally:
-            sys.stdin = old_stdin
-            sys.stdout = old_stdout
-
-        if stdin_target:
-            stdin_target.close()
-        if stdout_target:
-            stdout_target.close()
-
-        prev_pipe_r = pipe_r if i != len(commands) - 1 else None
-
-    for process in processes:
-        process.wait()
+    print(f"{cmd}: not found", file=sys.stderr)
+    return 1
 
 
-def run(command_with_args, stdout, stderr):
-    command, *args = command_with_args
-    stdout_file, stdout_mode = stdout
-    stderr_file, stderr_mode = stderr
-    if command in BUILTINS:
-        run_command(
-            BUILTINS[command], args, stdout_file, stdout_mode, stderr_file, stderr_mode
-        )
-    elif shutil.which(command):
-        if stdout_file or stderr_file:
-            with (
-                open(stdout_file, stdout_mode) if stdout_file else nullcontext() as out,
-                open(stderr_file, stderr_mode) if stderr_file else nullcontext() as err,
-            ):
-                subprocess.run([command] + args, stdout=out, stderr=err)
-        else:
-            subprocess.run([command] + args)
-    else:
-        print(f"{command}: command not found")
+def _pwd(*args: str) -> int:
+    print(os.getcwd())
+    return 0
 
 
-def run_command(func, args, stdout_file, stdout_mode, stderr_file, stderr_mode):
-    if stdout_file or stderr_file:
-        with (
-            open(stdout_file, stdout_mode) if stdout_file else nullcontext() as out,
-            open(stderr_file, stderr_mode) if stderr_file else nullcontext() as err,
-            redirect_stdout(out) if stdout_file else nullcontext(),
-            redirect_stderr(err) if stderr_file else nullcontext(),
-        ):
-            func(*args)
-    else:
-        func(*args)
+@cache
+def home() -> str:
+    return os.environ.get("HOME")
 
 
-def type_cmd(command):
-    if command in BUILTINS:
-        print(f"{command} is a shell builtin")
-    elif path := shutil.which(command):
-        print(f"{command} is {path}")
-    else:
-        print(f"{command}: not found")
+def _cd(*args) -> int:
+    if len(args) == 0:
+        os.chdir(home())
+        return 0
+    d = args[0]
+    if d == "~":
+        os.chdir(home())
+        return 0
 
-
-def cd_cmd(args):
     try:
-        if args == "~":
-            os.chdir(Path.home())
-        else:
-            os.chdir(args)
+        os.chdir(d)
+        return 0
     except:
-        print(f"cd: {args}: No such file or directory")
+        print(f"cd: {d}: No such file or directory", file=sys.stderr)
+        return 1
 
 
-def history_cmd(arg1=None, arg2=None):
-    if arg2 and arg1 == "-r":
-        file = arg2
-        readline.read_history_file(file)
-        return
-
-    length = readline.get_current_history_length()
-    limit = length
-
-    if arg1 is not None:
-        limit = int(arg1)
-
-    start = max(1, length - limit + 1)
-    for i in range(start, length + 1):
-        print(f"   {i}  {readline.get_history_item(i)}")
-
-
-def get_all_executables():
-    paths = os.environ.get("PATH", "").split(os.pathsep)
-    executables = set()
-    for p in paths:
-        if os.path.isdir(p):
-            for f in os.listdir(p):
-                fp = os.path.join(p, f)
-                if os.path.isfile(fp) and os.access(fp, os.X_OK):
-                    executables.add(f)
-    return executables
+def _history(*args) -> int:
+    history_items = [
+        f"    {i + 1}  {readline.get_history_item(i + 1)}"
+        for i in range(readline.get_current_history_length())
+    ]
+    if len(args) < 2:
+        n = int(args[0]) if len(args) == 1 else 0
+        history_items = history_items[-n:]
+        print("\n".join(history_items))
+    if len(args) == 2:
+        if args[0] == "-r":
+            with open(args[1], "r") as f:
+                more_items = [line.strip() for line in f.readlines()]
+            for item in more_items:
+                if not item:
+                    continue
+                readline.add_history(item)
+        if args[0] == "-w":
+            readline.write_history_file(args[1])
+    return 0
 
 
-def get_longest_common_prefix(strings):
-    if not strings:
-        return ""
-    if len(strings) == 1:
-        return strings[0]
+class Args:
+    def __init__(
+        self,
+        cmd,
+        args,
+        stdout_redirection,
+        stderr_redirection,
+        stdout_append,
+        stderr_append,
+    ):
+        self.cmd = cmd
+        self.args = args
+        self.stdout_redirection = stdout_redirection
+        self.stderr_redirection = stderr_redirection
+        self.stdout_append = stdout_append
+        self.stderr_append = stderr_append
 
-    prefix = strings[0]
-    for string in strings[1:]:
-        length = 0
-        for i, (c1, c2) in enumerate(zip(prefix, string)):
-            if c1 != c2:
-                break
-            length = i + 1
-        prefix = prefix[:length]
-        if not prefix:
+    def __repr__(self):
+        return str(
+            {
+                "cmd": self.cmd,
+                "args": self.args,
+                "stdout_redirection": self.stdout_redirection,
+                "stderr_redirection": self.stderr_redirection,
+                "stdout_append": self.stdout_append,
+                "stderr_append": self.stderr_append,
+            }
+        )
+
+
+def process_args(args: str) -> List[Args]:
+    return list(
+        filter(
+            None,
+            [process_args_for_one(sub_args.strip()) for sub_args in args.split("|")],
+        )
+    )
+
+
+def process_args_for_one(args: str) -> Optional[Args]:
+    if not args:
+        return None
+    inside_single = False
+    inside_double = False
+    escape = False
+    quoted_escape = False
+    quoted_escape_characters = {'"', "\\"}
+    res = [""]
+    for c in args:
+        match c:
+            case "'" if inside_single:
+                inside_single = False
+            case "'" if not inside_double and not escape:
+                inside_single = True
+            case '"' if inside_double and not quoted_escape:
+                inside_double = False
+            case '"' if not inside_single and not escape and not quoted_escape:
+                inside_double = True
+            case "\\" if inside_double and not quoted_escape:
+                quoted_escape = True
+            case _ if inside_single or inside_double:
+                if quoted_escape and c not in quoted_escape_characters:
+                    res[-1] += "\\"
+                quoted_escape = False
+                res[-1] += c
+            case " " if not escape:
+                if res[-1]:
+                    res.append("")
+            case _:
+                if c == "\\" and not escape:
+                    escape = True
+                else:
+                    escape = False
+                    res[-1] += c
+
+    if res[-1] == "":
+        res.pop()
+    cmd = res[0]
+    stdout_redirection = None
+    stderr_redirection = None
+    stdout_append = False
+    stderr_append = False
+    i = len(res)
+
+    def inner(c):
+        i = res.index(c)
+        return i, res[i + 1]
+
+    if ">" in res:
+        i, stdout_redirection = inner(">")
+    elif "1>" in res:
+        i, stdout_redirection = inner("1>")
+    elif ">>" in res:
+        i, stdout_redirection = inner(">>")
+        stdout_append = True
+    elif "1>>" in res:
+        i, stdout_redirection = inner("1>>")
+        stdout_append = True
+    elif "2>" in res:
+        i, stderr_redirection = inner("2>")
+    elif "2>>" in res:
+        i, stderr_redirection = inner("2>>")
+        stderr_append = True
+    return Args(
+        cmd,
+        res[1:i],
+        stdout_redirection,
+        stderr_redirection,
+        stdout_append,
+        stderr_append,
+    )
+
+
+def _read() -> List[Args]:
+    _in = input("$ ")
+    return process_args(_in)
+
+
+@cache
+def _get_external_cmds() -> Dict[str, str]:
+    cmds = {}
+    for d in os.environ.get("PATH").split(":"):
+        if not os.path.exists(d):
+            continue
+        for cmd in os.listdir(d):
+            path = f"{d}/{cmd}"
+            if os.access(path, os.X_OK):
+                cmds[cmd] = path
+    return cmds
+
+
+def _get_external_cmd(cmd) -> Optional[str]:
+    return _get_external_cmds().get(cmd)
+
+
+def _get_exec(cmd) -> Optional[Callable]:
+    return VALID_COMMANDS.get(cmd)
+
+
+def _evaluate(args: Args) -> int:
+    cmd = args.cmd
+    cmd_args = args.args
+    original_stdout = os.dup(sys.stdout.fileno())
+    original_stderr = os.dup(sys.stderr.fileno())
+    stdout_file, stderr_file = None, None
+
+    if args.stdout_redirection:
+        stdout_file = open(args.stdout_redirection, "a" if args.stdout_append else "w")
+        os.dup2(stdout_file.fileno(), sys.stdout.fileno())
+
+    if args.stderr_redirection:
+        stderr_file = open(args.stderr_redirection, "a" if args.stderr_append else "w")
+        os.dup2(stderr_file.fileno(), sys.stderr.fileno())
+
+    fn = _get_exec(cmd)
+    try:
+        if fn is not None:
+            return fn(*cmd_args)
+        path = _get_external_cmd(cmd)
+        if path is not None:
+            return subprocess.call([cmd, *cmd_args])
+        print(f"{cmd}: command not found", file=sys.stderr)
+        return 1
+    finally:
+        os.dup2(original_stdout, sys.stdout.fileno())
+        os.dup2(original_stderr, sys.stderr.fileno())
+        os.close(original_stdout)
+        os.close(original_stderr)
+        if stdout_file is not None:
+            stdout_file.close()
+        if stderr_file is not None:
+            stderr_file.close()
+
+
+def _evaluate_all(all_args: List[Args]) -> int:
+    if len(all_args) == 0:
+        return 0
+    if len(all_args) == 1:
+        return _evaluate(all_args[0])
+
+    original_stdin = os.dup(sys.stdin.fileno())
+    original_stdout = os.dup(sys.stdout.fileno())
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+
+    if pid > 0:
+        os.close(write_fd)
+        os.dup2(read_fd, sys.stdin.fileno())
+        os.close(read_fd)
+
+        exit_code = _evaluate_all(all_args[1:])
+        if exit_code >= 0:
+            os.wait()
+
+        os.dup2(original_stdin, sys.stdin.fileno())
+        os.close(original_stdin)
+        os.close(original_stdout)
+        return exit_code
+    else:
+        os.close(read_fd)
+        os.dup2(write_fd, sys.stdout.fileno())
+        os.close(write_fd)
+
+        _evaluate(all_args[0])
+
+        os.dup2(original_stdout, sys.stdout.fileno())
+        os.close(original_stdin)
+        os.close(original_stdout)
+        return -1
+
+
+def autocomplete(text: str, state: int) -> Optional[str]:
+    prefix = text.split(" ")[-1]
+    options = sorted(
+        [cmd for cmd in VALID_COMMANDS | _get_external_cmds() if cmd.startswith(prefix)]
+    )
+
+    if state < len(options):
+        if len(options) == 1:
+            return f"{options[0]} "
+        return options[state]
+
+    return None
+
+
+def repl():
+    while True:
+        exit_code = _evaluate_all(_read())
+        if exit_code == -1:
             break
 
-    return prefix
 
-
-all_commands = get_all_executables()
-BUILTINS = {
-    "exit": lambda: sys.exit(0),
-    "echo": lambda *args: print(" ".join(args)),
-    "type": type_cmd,
-    "pwd": lambda: print(os.getcwd()),
-    "cd": cd_cmd,
-    "history": history_cmd,
+VALID_COMMANDS = {
+    "exit": _exit,
+    "echo": _echo,
+    "type": _type,
+    "pwd": _pwd,
+    "cd": _cd,
+    "history": _history,
 }
 
 
 def main():
-    last_tab_text = ""
-    last_tab_matches = []
-    last_tab_count = 0
-
-    def completer(text, state):
-        nonlocal last_tab_text, last_tab_matches, last_tab_count
-
-        line = readline.get_line_buffer()
-
-        if not line.strip() or " " not in line.lstrip():
-            if text != last_tab_text:
-                last_tab_text = text
-                last_tab_matches = [
-                    c
-                    for c in set(list(BUILTINS.keys()) + list(all_commands))
-                    if c.startswith(text)
-                ]
-                last_tab_count = 0
-
-            if not last_tab_matches:
-                return None
-
-            if len(last_tab_matches) == 1:
-                if state == 0:
-                    return last_tab_matches[0] + " "
-                return None
-
-            if last_tab_count == 0:
-                last_tab_count += 1
-                if state == 0:
-                    sys.stdout.write("\a")  # Ring bell
-                    sys.stdout.flush()
-
-                    longest_prefix = get_longest_common_prefix(last_tab_matches)
-                    if len(longest_prefix) > len(text) and state == 0:
-                        return longest_prefix
-                    return text
-                return None
-            else:
-                if state == 0:
-                    print()  # New line
-                    print("  ".join(sorted(last_tab_matches)))
-                    sys.stdout.write(f"$ {text}")
-                    sys.stdout.flush()
-                    return None
-
-                longest_prefix = get_longest_common_prefix(last_tab_matches)
-                if len(longest_prefix) > len(text) and state == 0:
-                    return longest_prefix
-
-                return None
-        return None
-
-    def setup_readline():
-        if "libedit" in readline.__doc__:
-            readline.parse_and_bind("bind ^I rl_complete")
-        else:
-            readline.parse_and_bind("tab: complete")
-        readline.set_completer(completer)
-        readline.set_completer_delims(" \t\n")
-        readline.parse_and_bind("set show-all-if-ambiguous off")
-        readline.parse_and_bind("set completion-query-items -1")
-
-    setup_readline()
-    while True:
-        try:
-            user_input = input("$ ").strip()
-
-            parsed = parse_input(user_input)
-
-            if parsed["type"] == "pipeline":
-                run_pipeline(parsed["commands"])
-            else:
-                run(parsed["command"], parsed["stdout"], parsed["stderr"])
-
-        except KeyboardInterrupt:
-            print()
-        except Exception as e:
-            print(e)
+    readline.set_completer(autocomplete)
+    if "libedit" in readline.__doc__:
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+    if os.path.exists("~/.history"):
+        readline.read_history_file()
+    repl()
+    readline.write_history_file()
 
 
 if __name__ == "__main__":
