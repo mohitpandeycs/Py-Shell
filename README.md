@@ -20,14 +20,14 @@ Py-Shell is a minimal command-line shell written entirely in Python, built to an
 
 ## Features
 
-- 🖥️ **Interactive REPL** — Reads, parses, and executes commands in a live loop, just like a real shell.
-- 🔧 **Built-in Commands** — `cd`, `pwd`, `echo`, `type`, `history`, `complete`, `jobs`, `exit` — implemented, not imported.
-- 🔍 **Executable Discovery** — Walks `PATH` to resolve external commands, cross-platform via `pathlib`.
-- ↪️ **Full Redirection Support** — `>`, `>>`, `2>`, `2>>`, and explicit `1>` / `1>>` forms for stdout/stderr.
-- 🧵 **Quoting & Escaping** — A dedicated parser handles single quotes, double quotes, and escaped characters correctly.
-- ⌨️ **Tab Completion** — Integrates Python's `readline` with a custom completer built on the executable discovery logic.
-- 🗂️ **Command History** — Every command entered in a session is tracked and inspectable via `history`.
-- 🌒 **Background Jobs** — Run commands with `&` and track them through a lightweight job-handling system.
+- **Interactive REPL** — Reads, parses, and executes commands in a live loop, just like a real shell.
+- **Built-in Commands** — `cd`, `pwd`, `echo`, `type`, `history`, `complete`, `jobs`, `exit` — implemented, not imported.
+- **Executable Discovery** — Walks `PATH` to resolve external commands, cross-platform via `pathlib`.
+- **Full Redirection Support** — `>`, `>>`, `2>`, `2>>`, and explicit `1>` / `1>>` forms for stdout/stderr.
+- **Quoting & Escaping** — A dedicated parser handles single quotes, double quotes, and escaped characters correctly.
+- **Tab Completion** — Integrates Python's `readline` with a custom completer built on the executable discovery logic.
+- **Command History** — Every command entered in a session is tracked and inspectable via `history`.
+- **Background Jobs** — Run commands with `&` and track them through a lightweight job-handling system.
 
 ---
 
